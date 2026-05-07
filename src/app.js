@@ -55,6 +55,7 @@ let epicFilterIds = new Set(); // empty = show all
 let lastEpicFilterProjectId = null;
 let stackToolFilter = null; // null = show all, string = tool ID to filter by
 let todoTagFilter = null; // null = show all, string = tag to filter by
+let searchQuery = ""; // global search across todos and notes
 let dragHoverTimer = null;
 let syncTimer = null;
 let overviewTab = "dashboard"; // "dashboard" | "notes"
@@ -1785,7 +1786,30 @@ function buildSortBar(sourceArray, renderFn) {
 	dirBtn.addEventListener("click", () => { sortDir = sortDir === "asc" ? "desc" : "asc"; renderFn(); });
 	sortBar.appendChild(dirBtn);
 
+	const searchInput = document.createElement("input");
+	searchInput.type = "search";
+	searchInput.classList.add("sort-search-input");
+	searchInput.placeholder = "Search…";
+	searchInput.value = searchQuery;
+	searchInput.addEventListener("input", () => { searchQuery = searchInput.value; renderFn(); });
+	sortBar.appendChild(searchInput);
+
 	return sortBar;
+}
+
+function todoMatchesSearch(todo, projectCode) {
+	if (!searchQuery) return true;
+	const q = searchQuery.toLowerCase();
+	return [
+		todo.title,
+		todo.description,
+		todo.notes,
+		todo.status,
+		todo.priority,
+		projectCode,
+		...(todo.tags || []),
+		...(todo.checklist || []).map(c => (typeof c === "string" ? c : c.text) || ""),
+	].some(s => s?.toLowerCase().includes(q));
 }
 
 function sortedArray(arr) {
@@ -2656,7 +2680,8 @@ function buildKanbanColumn(col, project, epicId, filterByEpic) {
 			return t.epicId === epicId;
 		}).filter(t => t.status === col.label)
 		  .filter(t => !stackToolFilter || (Array.isArray(t.toolIds) && t.toolIds.includes(stackToolFilter)))
-		  .filter(t => !todoTagFilter || (Array.isArray(t.tags) && t.tags.includes(todoTagFilter))))
+		  .filter(t => !todoTagFilter || (Array.isArray(t.tags) && t.tags.includes(todoTagFilter)))
+		  .filter(t => todoMatchesSearch(t, project.code)))
 		: [];
 
 	todos.forEach(todo => {
@@ -3032,6 +3057,7 @@ function renderFlatKanban(project) {
 	sortedArray(project.todos)
 		.filter(t => !stackToolFilter || (Array.isArray(t.toolIds) && t.toolIds.includes(stackToolFilter)))
 		.filter(t => !todoTagFilter || (Array.isArray(t.tags) && t.tags.includes(todoTagFilter)))
+		.filter(t => todoMatchesSearch(t, project.code))
 		.forEach((todo) => {
 		const card = buildTodoCard(todo, {
 			save: () => { saveProjects(); renderTodos(); },
@@ -3183,6 +3209,7 @@ function addCardTouchDrag(todoCard, todo, ctx) {
 
 function renderInbox() {
 	currentView = "inbox";
+	searchQuery = "";
 	addTodoBtn.style.display = "none";
 	todoContainer.innerHTML = "";
 	todoContainer.classList.remove("swimlane-mode");
@@ -3234,7 +3261,8 @@ function renderInbox() {
 		return col;
 	});
 
-	const inboxSorted = sortBy === "default" ? [...inbox].reverse() : sortedArray(inbox);
+	const inboxSorted = (sortBy === "default" ? [...inbox].reverse() : sortedArray(inbox))
+		.filter(t => todoMatchesSearch(t, ""));
 
 	inboxSorted.forEach((todo, i) => {
 		const card = buildTodoCard(todo, {
@@ -3265,6 +3293,7 @@ function renderInbox() {
 
 function renderOverview() {
 	addTodoBtn.style.display = "none";
+	searchQuery = "";
 	todoContainer.innerHTML = "";
 	todoContainer.classList.remove("swimlane-mode");
 	todoContainer.classList.add("overview-view");
@@ -3465,6 +3494,7 @@ function renderOverviewNotes() {
 	// Build filter state
 	let activeCategory = null;
 	let activeTag = null;
+	let noteSearchQuery = "";
 
 	// Gather all unique categories and tags
 	const allCategories = [...new Set([
@@ -3478,6 +3508,16 @@ function renderOverviewNotes() {
 
 	const view = document.createElement("div");
 	view.classList.add("overview-notes-view");
+
+	// Search bar
+	const searchRow = document.createElement("div");
+	searchRow.classList.add("overview-notes-search-row");
+	const noteSearchInput = document.createElement("input");
+	noteSearchInput.type = "search";
+	noteSearchInput.classList.add("notes-filter-input", "overview-notes-search-input");
+	noteSearchInput.placeholder = "Search notes…";
+	noteSearchInput.addEventListener("input", () => { noteSearchQuery = noteSearchInput.value; rebuildGrid(); });
+	searchRow.appendChild(noteSearchInput);
 
 	// Filter bar
 	const filterRow = document.createElement("div");
@@ -3568,15 +3608,23 @@ function renderOverviewNotes() {
 		});
 		grid.appendChild(addCard);
 
+		const q = noteSearchQuery.toLowerCase();
+		function matchesNoteSearch(note) {
+			if (!noteSearchQuery) return true;
+			return [note.content, note.html, note.category, ...(note.tags || [])].some(s => s?.toLowerCase().includes(q));
+		}
+
 		const filteredProjectNotes = allProjectNotes.filter(({ note }) => {
 			if (activeCategory && note.category !== activeCategory) return false;
 			if (activeTag && !(note.tags || []).includes(activeTag)) return false;
+			if (!matchesNoteSearch(note)) return false;
 			return true;
 		});
 
 		const filteredGeneral = generalNotes.filter(note => {
 			if (activeCategory && note.category !== activeCategory) return false;
 			if (activeTag && !(note.tags || []).includes(activeTag)) return false;
+			if (!matchesNoteSearch(note)) return false;
 			return true;
 		});
 
@@ -3596,7 +3644,7 @@ function renderOverviewNotes() {
 	rebuildFilter();
 	rebuildGrid();
 
-	view.append(filterRow, grid);
+	view.append(searchRow, filterRow, grid);
 	todoContainer.appendChild(view);
 }
 
@@ -4236,6 +4284,7 @@ function renderProjects() {
 			currentProjectId = project.id;
 			currentView = "project";
 			currentProjectTab = "board";
+			searchQuery = "";
 			selectedTodos.clear();
 			renderTodos();
 			renderProjects();

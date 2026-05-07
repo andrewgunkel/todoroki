@@ -1696,6 +1696,46 @@ body {
     color: #fff;
 }
 
+.sort-search-input {
+    margin-left: auto;
+    font-size: 0.75rem;
+    font-family: inherit;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--md-field-border);
+    background: var(--md-card-surface);
+    color: var(--md-text-primary);
+    outline: none;
+    width: 160px;
+    transition: border-color 0.15s, width 0.2s;
+}
+
+.sort-search-input:focus {
+    border-color: var(--palette-dark);
+    width: 220px;
+}
+
+.sort-search-input::placeholder { color: var(--md-text-secondary); }
+
+[data-theme="dark"] .sort-search-input {
+    background: #1c1b2e;
+    border-color: #3d3b52;
+    color: #e0deff;
+}
+
+[data-theme="dark"] .sort-search-input:focus { border-color: #6c63ff; }
+
+.overview-notes-search-row {
+    padding: 8px 0 4px;
+    display: flex;
+    align-items: center;
+}
+
+.overview-notes-search-input {
+    width: 220px;
+    border-radius: 999px;
+}
+
 /* ======================
    DRAG & DROP
 ====================== */
