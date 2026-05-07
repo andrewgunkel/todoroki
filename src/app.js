@@ -1791,7 +1791,16 @@ function buildSortBar(sourceArray, renderFn) {
 	searchInput.classList.add("sort-search-input");
 	searchInput.placeholder = "Search…";
 	searchInput.value = searchQuery;
-	searchInput.addEventListener("input", () => { searchQuery = searchInput.value; renderFn(); });
+	searchInput.addEventListener("input", () => {
+		searchQuery = searchInput.value;
+		const selStart = searchInput.selectionStart;
+		const selEnd = searchInput.selectionEnd;
+		renderFn();
+		requestAnimationFrame(() => {
+			const newInput = document.querySelector(".sort-search-input");
+			if (newInput) { newInput.focus(); newInput.setSelectionRange(selStart, selEnd); }
+		});
+	});
 	sortBar.appendChild(searchInput);
 
 	return sortBar;
