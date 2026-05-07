@@ -10,6 +10,7 @@ function Todo(title, description, dueDate, priority, notes, checklist, reference
 	this.id = self.crypto.randomUUID();
 	this.createdAt = Date.now();
 	this.updatedAt = Date.now();
+	this.tags = [];
 }
 
 export { Todo };

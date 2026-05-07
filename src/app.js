@@ -8,7 +8,8 @@ const formContainer = document.querySelector("#form-container");
 const addTodoBtn = document.querySelector("#add-todo-btn");
 const sidebar = document.querySelector("#sidebar");
 const projectTitle = document.querySelector("#project-title");
-const themeToggleBtn = document.querySelector("#theme-toggle-btn");
+const projectCodeBadge = document.querySelector("#project-code-badge");
+// themeToggleBtn removed — dark mode now lives in the settings popup
 const sortBarContainer = document.querySelector("#sort-bar-container");
 const sidebarToggleBtn = document.querySelector("#sidebar-toggle-btn");
 const sidebarBackdrop = document.querySelector("#sidebar-backdrop");
@@ -52,11 +53,14 @@ let selectionOverlay = null;
 
 let epicFilterIds = new Set(); // empty = show all
 let lastEpicFilterProjectId = null;
+let stackToolFilter = null; // null = show all, string = tool ID to filter by
+let todoTagFilter = null; // null = show all, string = tag to filter by
 let dragHoverTimer = null;
 let syncTimer = null;
+let overviewTab = "dashboard"; // "dashboard" | "notes"
 
 // Cross-device user preferences — loaded from Supabase after auth
-let userPrefs = { theme: "light", avatarColor: null, displayName: "" };
+let userPrefs = { theme: "light", avatarColor: null, displayName: "", generalNotes: [] };
 
 function showColumnDeleteModal(col) {
 	const others = columns.filter(c => c.id !== col.id);
@@ -347,6 +351,7 @@ async function loadUserPrefs() {
 		userPrefs.theme = data.theme || "light";
 		userPrefs.avatarColor = data.avatar_color || null;
 		userPrefs.displayName = data.display_name || "";
+		userPrefs.generalNotes = data.general_notes || [];
 	} else {
 		// First login on this device — migrate from localStorage then save
 		const localTheme = localStorage.getItem("theme");
@@ -364,11 +369,12 @@ async function saveUserPrefs() {
 	try {
 		await supabase.from("user_preferences").upsert(
 			{
-				user_id:      currentUser.id,
-				theme:        userPrefs.theme,
-				avatar_color: userPrefs.avatarColor,
-				display_name: userPrefs.displayName,
-				updated_at:   new Date().toISOString(),
+				user_id:       currentUser.id,
+				theme:         userPrefs.theme,
+				avatar_color:  userPrefs.avatarColor,
+				display_name:  userPrefs.displayName,
+				general_notes: userPrefs.generalNotes,
+				updated_at:    new Date().toISOString(),
 			},
 			{ onConflict: "user_id" }
 		);
@@ -379,36 +385,66 @@ async function saveUserPrefs() {
 
 // ── Helpers ────────────────────────────────────────────────
 
+function renumberProjectTodos(project) {
+	const sorted = [...project.todos].sort((a, b) => (a.number || 0) - (b.number || 0));
+	sorted.forEach((t, i) => { t.number = i + 1; });
+	project.todoCounter = sorted.length;
+}
+
+function generateProjectCode(title) {
+	const clean = title.replace(/[^a-zA-Z0-9 ]/g, "").toUpperCase();
+	const words = clean.split(/\s+/).filter(Boolean);
+	if (words.length >= 2) {
+		return words.slice(0, 3).map(w => w[0]).join("").padEnd(3, "X").slice(0, 3);
+	}
+	return (words[0] || "PRJ").slice(0, 3).padEnd(3, "X");
+}
+
+function defaultProjectTabs() {
+	return [
+		{ id: "board",     type: "board",     label: "Board" },
+		{ id: "resources", type: "resources", label: "Resources" },
+	];
+}
+
 function buildProjectRow(project, index) {
 	return {
-		id: project.id,
-		user_id: currentUser.id,
-		title: project.title,
-		description: project.description || "",
-		sort_order: index,
-		epics: project.epics || [],
-		resources: project.resources || { notes: "" },
+		id:               project.id,
+		user_id:          currentUser.id,
+		title:            project.title,
+		description:      project.description || "",
+		sort_order:       index,
+		epics:            project.epics || [],
+		resources:        project.resources || { notes: "" },
 		no_epic_collapsed: project.noEpicCollapsed || false,
+		code:             project.code || "",
+		todo_counter:     project.todoCounter || 0,
+		tabs:             project.tabs || defaultProjectTabs(),
+		notes:            project.notes || [],
+		tools:            project.tools || [],
 	};
 }
 
 function buildTodoRow(todo, projectId, index) {
 	return {
-		id: todo.id,
-		user_id: currentUser.id,
-		project_id: projectId,
-		title: todo.title,
-		description: todo.description || "",
-		due_date: todo.dueDate || "",
-		priority: todo.priority || "Low",
-		notes: todo.notes || "",
-		checklist: todo.checklist || [],
+		id:             todo.id,
+		user_id:        currentUser.id,
+		project_id:     projectId,
+		title:          todo.title,
+		description:    todo.description || "",
+		due_date:       todo.dueDate || "",
+		priority:       todo.priority || "Low",
+		notes:          todo.notes || "",
+		checklist:      todo.checklist || [],
 		reference_link: todo.referenceLink || "",
-		status: todo.status || "",
-		epic_id: todo.epicId || null,
-		sort_order: index,
-		created_at: todo.createdAt || Date.now(),
-		updated_at: todo.updatedAt || Date.now(),
+		status:         todo.status || "",
+		epic_id:        todo.epicId || null,
+		sort_order:     index,
+		created_at:     todo.createdAt || Date.now(),
+		updated_at:     todo.updatedAt || Date.now(),
+		number:         todo.number || 0,
+		tool_ids:       todo.toolIds || [],
+		tags:           todo.tags || [],
 	};
 }
 
@@ -533,14 +569,19 @@ async function loadFromSupabase() {
 	(projectRows || []).forEach(row => {
 		const project = Object.create(Project.prototype);
 		Object.assign(project, {
-			id: row.id,
-			title: row.title,
-			description: row.description,
-			sort_order: row.sort_order,
-			epics: row.epics || [],
-			resources: row.resources || { notes: "" },
+			id:             row.id,
+			title:          row.title,
+			description:    row.description,
+			sort_order:     row.sort_order,
+			epics:          row.epics || [],
+			resources:      row.resources || { notes: "" },
 			noEpicCollapsed: row.no_epic_collapsed || false,
-			todos: [],
+			code:           row.code || generateProjectCode(row.title),
+			todoCounter:    row.todo_counter || 0,
+			tabs:           (row.tabs && row.tabs.length) ? row.tabs : defaultProjectTabs(),
+			notes:          row.notes || [],
+			tools:          row.tools || [],
+			todos:          [],
 		});
 		project.epics.forEach(e => { if (!e.extraColumns) e.extraColumns = []; });
 		projects.push(project);
@@ -548,16 +589,19 @@ async function loadFromSupabase() {
 
 	(todoRows || []).forEach(row => {
 		const todo = {
-			id: row.id,
-			title: row.title,
-			description: row.description,
-			dueDate: row.due_date,
-			priority: row.priority,
-			notes: row.notes,
-			checklist: Array.isArray(row.checklist) ? row.checklist : [],
+			id:            row.id,
+			title:         row.title,
+			description:   row.description,
+			dueDate:       row.due_date,
+			priority:      row.priority,
+			notes:         row.notes,
+			checklist:     Array.isArray(row.checklist) ? row.checklist : [],
 			referenceLink: row.reference_link,
-			status: row.status,
-			epicId: row.epic_id || null,
+			status:        row.status,
+			epicId:        row.epic_id || null,
+			number:        row.number || 0,
+			toolIds:       Array.isArray(row.tool_ids) ? row.tool_ids : [],
+			tags:          Array.isArray(row.tags) ? row.tags : [],
 			createdAt: row.created_at,
 			updatedAt: row.updated_at,
 		};
@@ -590,8 +634,13 @@ supabase.auth.getSession().then(async ({ data: { session } }) => {
 
 		if (projects.length === 0) {
 			const defaultProject = new Project("Default", "");
-			defaultProject.epics = [];
-			defaultProject.resources = { notes: "" };
+			defaultProject.epics       = [];
+			defaultProject.resources   = { notes: "" };
+			defaultProject.code        = "DEF";
+			defaultProject.todoCounter = 0;
+			defaultProject.tabs        = defaultProjectTabs();
+			defaultProject.notes       = [];
+			defaultProject.tools       = [];
 			projects.push(defaultProject);
 			currentProjectId = defaultProject.id;
 			saveProjects();
@@ -684,10 +733,15 @@ function makeEditable(element, todo, field, type = "text", options = null, onSav
 
 function addProject(title) {
 	const project = new Project(title.trim(), "");
-	project.epics = [];
-	project.resources = { notes: "" };
+	project.epics       = [];
+	project.resources   = { notes: "" };
+	project.code        = generateProjectCode(title.trim());
+	project.todoCounter = 0;
+	project.tabs        = defaultProjectTabs();
+	project.notes       = [];
+	project.tools       = [];
 	projects.push(project);
-	currentProjectId = project.id;
+	currentProjectId  = project.id;
 	currentProjectTab = "board";
 	saveProjects();
 	renderProjects();
@@ -998,13 +1052,17 @@ function buildTodoCard(todo, ctx) {
 			if (ctx.isInbox) {
 				const idx = inbox.indexOf(todo);
 				if (idx !== -1) inbox.splice(idx, 1);
+				todo.number = 0; // inbox todos get fresh number in project
 				targetProject.addTodo(todo);
 				saveInbox();
 				saveProjects();
 				renderInbox();
 			} else {
 				if (targetProjectId !== currentProjectId) {
-					getCurrentProject().removeTodo(todo.id);
+					const srcProject = getCurrentProject();
+					srcProject.removeTodo(todo.id);
+					renumberProjectTodos(srcProject);
+					todo.number = 0;
 					targetProject.addTodo(todo);
 					saveProjects();
 					renderTodos();
@@ -1064,6 +1122,18 @@ function buildTodoCard(todo, ctx) {
 	// ASSEMBLE
 	const todoHeader = document.createElement("div");
 	todoHeader.classList.add("todo-header");
+
+	// Number badge (DEF-1)
+	if (!ctx.isInbox && todo.number) {
+		const proj = ctx.project || getCurrentProject();
+		if (proj && proj.code) {
+			const numBadge = document.createElement("span");
+			numBadge.classList.add("todo-number-badge");
+			numBadge.textContent = `${proj.code}-${todo.number}`;
+			todoHeader.appendChild(numBadge);
+		}
+	}
+
 	todoHeader.appendChild(todoTitle);
 	if (!ctx.isInbox) {
 		const proj = getCurrentProject();
@@ -1078,12 +1148,142 @@ function buildTodoCard(todo, ctx) {
 	todoMeta.appendChild(todoPriority);
 	todoMeta.appendChild(todoStatus);
 
+	// Tool assignment row (when Stack tab has tools)
+	const proj = ctx.project || getCurrentProject();
+	const hasStackTab = !ctx.isInbox && proj?.tabs?.some(t => t.type === "stack");
+	const toolBadgesRow = document.createElement("div");
+	toolBadgesRow.classList.add("todo-tools-row");
+	if (hasStackTab && proj?.tools?.length) {
+		if (!Array.isArray(todo.toolIds)) todo.toolIds = [];
+
+		function renderCardTools() {
+			toolBadgesRow.innerHTML = "";
+
+			// Selected tools as removable capsule badges
+			todo.toolIds.forEach(tid => {
+				const tool = proj.tools.find(t => t.id === tid);
+				if (!tool) return;
+				const badge = document.createElement("span");
+				badge.classList.add("tool-badge");
+				badge.title = "Click to remove";
+				const dot = document.createElement("span");
+				dot.classList.add("tool-badge-dot");
+				dot.style.background = tool.color || "#888";
+				badge.appendChild(dot);
+				badge.appendChild(document.createTextNode(tool.name));
+				badge.addEventListener("click", (e) => {
+					e.stopPropagation();
+					todo.toolIds = todo.toolIds.filter(id => id !== tool.id);
+					ctx.save();
+					renderCardTools();
+				});
+				toolBadgesRow.appendChild(badge);
+			});
+
+			// "+ Tool" button to open picker
+			const addToolBtn = document.createElement("button");
+			addToolBtn.classList.add("todo-add-tool-btn");
+			addToolBtn.textContent = "+ Tool";
+			addToolBtn.addEventListener("click", (e) => {
+				e.stopPropagation();
+				const existing = document.querySelector(".todo-tool-picker");
+				if (existing) { existing.remove(); return; }
+
+				const picker = document.createElement("div");
+				picker.classList.add("todo-tool-picker");
+
+				proj.tools.forEach(tool => {
+					const opt = document.createElement("button");
+					opt.classList.add("todo-tool-picker-opt");
+					const isSelected = todo.toolIds.includes(tool.id);
+					if (isSelected) opt.classList.add("selected");
+
+					const dot = document.createElement("span");
+					dot.classList.add("tool-badge-dot");
+					dot.style.background = tool.color || "#888";
+					opt.appendChild(dot);
+					opt.appendChild(document.createTextNode(tool.name));
+
+					opt.addEventListener("click", (ev) => {
+						ev.stopPropagation();
+						if (todo.toolIds.includes(tool.id)) {
+							todo.toolIds = todo.toolIds.filter(id => id !== tool.id);
+						} else {
+							todo.toolIds.push(tool.id);
+						}
+						ctx.save();
+						picker.remove();
+						renderCardTools();
+					});
+					picker.appendChild(opt);
+				});
+
+				document.body.appendChild(picker);
+				const rect = addToolBtn.getBoundingClientRect();
+				picker.style.top  = `${rect.bottom + 4}px`;
+				picker.style.left = `${rect.left}px`;
+
+				function onOutside(ev) {
+					if (!picker.contains(ev.target) && ev.target !== addToolBtn) {
+						picker.remove();
+						document.removeEventListener("click", onOutside, true);
+					}
+				}
+				setTimeout(() => document.addEventListener("click", onOutside, true), 0);
+			});
+			toolBadgesRow.appendChild(addToolBtn);
+		}
+		renderCardTools();
+	}
+
+	// TAGS
+	if (!Array.isArray(todo.tags)) todo.tags = [];
+	const todoTagsRow = document.createElement("div");
+	todoTagsRow.classList.add("todo-tags-row");
+
+	function renderTodoTags() {
+		todoTagsRow.innerHTML = "";
+		todo.tags.forEach((tag, i) => {
+			const chip = document.createElement("span");
+			chip.classList.add("todo-tag-chip");
+			chip.textContent = `#${tag}`;
+			chip.title = "Click to remove";
+			chip.addEventListener("click", (e) => {
+				e.stopPropagation();
+				todo.tags.splice(i, 1);
+				ctx.save();
+				renderTodoTags();
+			});
+			todoTagsRow.appendChild(chip);
+		});
+		const tagIn = document.createElement("input");
+		tagIn.placeholder = "+ tag";
+		tagIn.classList.add("todo-tag-input");
+		tagIn.addEventListener("keydown", (e) => {
+			if (e.key === "Enter" || e.key === ",") {
+				e.preventDefault();
+				const val = tagIn.value.trim().replace(/^#/, "").toLowerCase().replace(/,$/, "");
+				if (val && !todo.tags.includes(val)) {
+					todo.tags.push(val);
+					ctx.save();
+					renderTodoTags();
+				} else {
+					tagIn.value = "";
+				}
+			}
+		});
+		todoTagsRow.appendChild(tagIn);
+	}
+	renderTodoTags();
+
 	todoCard.appendChild(todoHeader);
 	todoCard.appendChild(todoDescription);
 	todoCard.appendChild(todoMeta);
+	if (hasStackTab && proj?.tools?.length) todoCard.appendChild(toolBadgesRow);
 	todoCard.appendChild(todoNotes);
 	todoCard.appendChild(todoChecklist);
 	todoCard.appendChild(todoLink);
+	todoCard.appendChild(todoTagsRow);
 
 	addCardTouchDrag(todoCard, todo, ctx);
 
@@ -1132,6 +1332,12 @@ function showInboxAddForm() {
 	dueDateInput.type = "date";
 	dueDateInput.classList.add("modal-form-input");
 
+	// Tags input for inbox add
+	const inboxTagsInput = document.createElement("input");
+	inboxTagsInput.type = "text";
+	inboxTagsInput.placeholder = "Tags (comma-separated, e.g. urgent, bug)";
+	inboxTagsInput.classList.add("modal-form-input");
+
 	const addBtn = document.createElement("button");
 	addBtn.classList.add("modal-btn-primary");
 	addBtn.textContent = "Add to Inbox";
@@ -1147,6 +1353,7 @@ function showInboxAddForm() {
 			"", [], "", getColumnLabels()[0] || ""
 		);
 		todo.epicId = null;
+		todo.tags = inboxTagsInput.value.split(",").map(t => t.trim().toLowerCase()).filter(Boolean);
 		inbox.push(todo);
 		saveInbox();
 		if (currentView === "inbox") renderInbox();
@@ -1159,6 +1366,7 @@ function showInboxAddForm() {
 	modal.appendChild(makeField("Description", descInput));
 	modal.appendChild(makeField("Priority", prioritySelect));
 	modal.appendChild(makeField("Due Date", dueDateInput));
+	modal.appendChild(makeField("Tags", inboxTagsInput));
 	modal.appendChild(addBtn);
 	overlay.appendChild(modal);
 	document.body.appendChild(overlay);
@@ -1232,11 +1440,22 @@ function showEpicAddForm(epicId) {
    PROJECT TABS
 ====================== */
 
-function buildProjectTabBar() {
+const TAB_TYPE_OPTIONS = [
+	{ type: "notes", label: "Notes" },
+	{ type: "stack", label: "Stack" },
+];
+
+function buildProjectTabBar(project) {
 	const bar = document.createElement("div");
 	bar.classList.add("project-tab-bar");
+	bar.style.position = "relative";
 
-	[{ id: "board", label: "Board" }, { id: "resources", label: "Resources" }].forEach(tab => {
+	const tabs = project.tabs && project.tabs.length ? project.tabs : defaultProjectTabs();
+
+	tabs.forEach(tab => {
+		const item = document.createElement("div");
+		item.classList.add("project-tab-item");
+
 		const btn = document.createElement("button");
 		btn.classList.add("project-tab");
 		btn.textContent = tab.label;
@@ -1245,7 +1464,80 @@ function buildProjectTabBar() {
 			currentProjectTab = tab.id;
 			renderTodos();
 		});
-		bar.appendChild(btn);
+		item.appendChild(btn);
+
+		// Removable tabs (not board)
+		if (tab.type !== "board") {
+			const removeBtn = document.createElement("button");
+			removeBtn.classList.add("project-tab-remove-btn");
+			removeBtn.title = `Remove ${tab.label} tab`;
+			removeBtn.textContent = "×";
+			removeBtn.addEventListener("click", (e) => {
+				e.stopPropagation();
+				project.tabs = project.tabs.filter(t => t.id !== tab.id);
+				if (currentProjectTab === tab.id) currentProjectTab = "board";
+				saveProjects();
+				renderTodos();
+			});
+			item.appendChild(removeBtn);
+		}
+
+		bar.appendChild(item);
+	});
+
+	// "+" add tab button
+	const addBtn = document.createElement("button");
+	addBtn.classList.add("project-tab-add-btn");
+	addBtn.title = "Add tab";
+	addBtn.textContent = "+";
+	bar.appendChild(addBtn);
+
+	addBtn.addEventListener("click", (e) => {
+		e.stopPropagation();
+		const existing = document.querySelector(".tab-add-dropdown");
+		if (existing) { existing.remove(); return; }
+
+		const dropdown = document.createElement("div");
+		dropdown.classList.add("tab-add-dropdown");
+
+		const available = TAB_TYPE_OPTIONS.filter(opt =>
+			!tabs.some(t => t.type === opt.type)
+		);
+
+		if (available.length === 0) {
+			const msg = document.createElement("div");
+			msg.style.cssText = "padding:10px;font-size:0.8rem;color:var(--md-label-color);";
+			msg.textContent = "All tabs added";
+			dropdown.appendChild(msg);
+		} else {
+			available.forEach(opt => {
+				const optBtn = document.createElement("button");
+				optBtn.classList.add("tab-add-option");
+				optBtn.textContent = opt.label;
+				optBtn.addEventListener("click", () => {
+					if (!project.tabs) project.tabs = defaultProjectTabs();
+					project.tabs.push({ id: self.crypto.randomUUID(), type: opt.type, label: opt.label });
+					currentProjectTab = project.tabs[project.tabs.length - 1].id;
+					saveProjects();
+					renderTodos();
+					dropdown.remove();
+				});
+				dropdown.appendChild(optBtn);
+			});
+		}
+
+		document.body.appendChild(dropdown);
+		const rect = addBtn.getBoundingClientRect();
+		dropdown.style.top  = `${rect.bottom + 6}px`;
+		dropdown.style.left = `${rect.left}px`;
+
+		function onOutside(ev) {
+			if (!dropdown.contains(ev.target) && ev.target !== addBtn) {
+				dropdown.remove();
+				document.removeEventListener("click", onOutside, true);
+			}
+		}
+		setTimeout(() => document.addEventListener("click", onOutside, true), 0);
 	});
 
 	return bar;
@@ -1622,6 +1914,568 @@ function batchUpdate(field, value) {
 }
 
 /* ======================
+   NOTES TAB
+====================== */
+
+const NOTE_COLORS = ["#FCFF4B","#1a73e8","#188038","#e91e8c","#f59e0b","#9c27b0","#ef4444","#06b6d4"];
+
+function renderNotesTab(project) {
+	if (!project.notes) project.notes = [];
+
+	const container = document.createElement("div");
+	container.classList.add("notes-tab");
+
+	// Header
+	const header = document.createElement("div");
+	header.classList.add("notes-header");
+
+	// Filter bar
+	const filterBar = document.createElement("div");
+	filterBar.classList.add("notes-filter-bar");
+
+	const searchInput = document.createElement("input");
+	searchInput.classList.add("notes-filter-input");
+	searchInput.placeholder = "Search notes…";
+	searchInput.type = "search";
+
+	const categoryFilterWrap = document.createElement("div");
+	categoryFilterWrap.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;align-items:center;";
+
+	const tagFilterWrap = document.createElement("div");
+	tagFilterWrap.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;align-items:center;";
+
+	let activeCategory = null;
+	let activeTag = null;
+
+	function getCategories() {
+		return [...new Set(project.notes.map(n => n.category).filter(Boolean))];
+	}
+
+	function getAllTags() {
+		return [...new Set(project.notes.flatMap(n => n.tags || []).filter(Boolean))];
+	}
+
+	function rebuildFilterPills() {
+		// Categories
+		categoryFilterWrap.innerHTML = "";
+		const catLabel = document.createElement("span");
+		catLabel.style.cssText = "font-size:0.72rem;color:var(--md-label-color);";
+		catLabel.textContent = "Category:";
+		categoryFilterWrap.appendChild(catLabel);
+
+		const allCatP = document.createElement("button");
+		allCatP.classList.add("notes-filter-pill");
+		if (!activeCategory) allCatP.classList.add("active");
+		allCatP.textContent = "All";
+		allCatP.addEventListener("click", () => { activeCategory = null; renderGrid(); rebuildFilterPills(); });
+		categoryFilterWrap.appendChild(allCatP);
+
+		getCategories().forEach(cat => {
+			const pill = document.createElement("button");
+			pill.classList.add("notes-filter-pill");
+			if (cat === activeCategory) pill.classList.add("active");
+			pill.textContent = cat;
+			pill.addEventListener("click", () => {
+				activeCategory = cat === activeCategory ? null : cat;
+				renderGrid(); rebuildFilterPills();
+			});
+			categoryFilterWrap.appendChild(pill);
+		});
+
+		// Tags
+		tagFilterWrap.innerHTML = "";
+		const tags = getAllTags();
+		if (tags.length) {
+			const tagLabel = document.createElement("span");
+			tagLabel.style.cssText = "font-size:0.72rem;color:var(--md-label-color);";
+			tagLabel.textContent = "Tag:";
+			tagFilterWrap.appendChild(tagLabel);
+
+			const allTagP = document.createElement("button");
+			allTagP.classList.add("notes-filter-pill");
+			if (!activeTag) allTagP.classList.add("active");
+			allTagP.textContent = "All";
+			allTagP.addEventListener("click", () => { activeTag = null; renderGrid(); rebuildFilterPills(); });
+			tagFilterWrap.appendChild(allTagP);
+
+			tags.forEach(tag => {
+				const pill = document.createElement("button");
+				pill.classList.add("notes-filter-pill");
+				if (tag === activeTag) pill.classList.add("active");
+				pill.textContent = tag;
+				pill.addEventListener("click", () => {
+					activeTag = tag === activeTag ? null : tag;
+					renderGrid(); rebuildFilterPills();
+				});
+				tagFilterWrap.appendChild(pill);
+			});
+		}
+	}
+
+	filterBar.appendChild(searchInput);
+	filterBar.appendChild(categoryFilterWrap);
+	filterBar.appendChild(tagFilterWrap);
+
+	const addBtn = document.createElement("button");
+	addBtn.classList.add("notes-add-btn");
+	addBtn.textContent = "+ Add Note";
+	addBtn.addEventListener("click", () => {
+		const note = {
+			id: self.crypto.randomUUID(),
+			content: "",
+			html: "",
+			tags: [],
+			category: "",
+			createdAt: Date.now(),
+			updatedAt: Date.now(),
+		};
+		project.notes.unshift(note);
+		saveProjects();
+		renderGrid();
+		rebuildFilterPills();
+		requestAnimationFrame(() => {
+			const firstContent = grid.querySelector(".note-card-content");
+			if (firstContent) firstContent.focus();
+		});
+	});
+
+	header.appendChild(filterBar);
+	header.appendChild(addBtn);
+	container.appendChild(header);
+
+	// Grid
+	const grid = document.createElement("div");
+	grid.classList.add("notes-grid");
+	container.appendChild(grid);
+
+	function renderGrid() {
+		grid.innerHTML = "";
+		const query = searchInput.value.toLowerCase();
+		const visible = project.notes.filter(note => {
+			if (activeCategory && note.category !== activeCategory) return false;
+			if (activeTag && !(note.tags || []).includes(activeTag)) return false;
+			if (query && !note.content?.toLowerCase().includes(query) &&
+				!note.html?.toLowerCase().includes(query) &&
+				!note.tags?.some(t => t.toLowerCase().includes(query)) &&
+				!note.category?.toLowerCase().includes(query)) return false;
+			return true;
+		});
+
+		if (visible.length === 0) {
+			const empty = document.createElement("div");
+			empty.classList.add("notes-empty");
+			empty.textContent = query || activeCategory || activeTag ? "No notes match" : "No notes yet — click + Add Note to start.";
+			grid.appendChild(empty);
+			return;
+		}
+
+		visible.forEach(note => grid.appendChild(buildNoteCard(note, project, renderGrid, rebuildFilterPills)));
+	}
+
+	searchInput.addEventListener("input", renderGrid);
+
+	renderGrid();
+	rebuildFilterPills();
+
+	todoContainer.innerHTML = "";
+	todoContainer.appendChild(container);
+}
+
+function buildNoteCard(note, project, refresh, refreshPills) {
+	const card = document.createElement("div");
+	card.classList.add("note-card");
+
+	// Header
+	const cardHeader = document.createElement("div");
+	cardHeader.classList.add("note-card-header");
+
+	const meta = document.createElement("div");
+	meta.classList.add("note-card-meta");
+
+	const catInput = document.createElement("input");
+	catInput.classList.add("note-category-input");
+	catInput.value = note.category || "";
+	catInput.placeholder = "Category";
+	catInput.addEventListener("blur", () => {
+		note.category = catInput.value.trim().toUpperCase();
+		catInput.value = note.category;
+		note.updatedAt = Date.now();
+		saveProjects();
+		if (refreshPills) refreshPills();
+	});
+	catInput.addEventListener("keydown", e => { if (e.key === "Enter") catInput.blur(); });
+
+	const dateEl = document.createElement("div");
+	dateEl.classList.add("note-card-date");
+	const d = new Date(note.updatedAt || note.createdAt);
+	dateEl.textContent = d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+
+	meta.appendChild(catInput);
+	meta.appendChild(dateEl);
+
+	const deleteBtn = document.createElement("button");
+	deleteBtn.classList.add("note-card-delete");
+	deleteBtn.title = "Delete note";
+	deleteBtn.textContent = "✕";
+	deleteBtn.addEventListener("click", () => {
+		const idx = project.notes.findIndex(n => n.id === note.id);
+		if (idx !== -1) project.notes.splice(idx, 1);
+		saveProjects();
+		refresh();
+		if (refreshPills) refreshPills();
+	});
+
+	cardHeader.appendChild(meta);
+	cardHeader.appendChild(deleteBtn);
+
+	// Format toolbar
+	const toolbar = document.createElement("div");
+	toolbar.classList.add("note-card-toolbar");
+
+	const fmts = [
+		{ cmd: "bold",          label: "<strong>B</strong>", title: "Bold" },
+		{ cmd: "italic",        label: "<em>I</em>",          title: "Italic" },
+		{ cmd: "insertUnorderedList", label: "• List",        title: "Bullet list" },
+	];
+
+	fmts.forEach(({ cmd, label, title }) => {
+		const btn = document.createElement("button");
+		btn.classList.add("note-fmt-btn");
+		btn.innerHTML = label;
+		btn.title = title;
+		btn.type = "button";
+		btn.addEventListener("mousedown", e => {
+			e.preventDefault();
+			document.execCommand(cmd, false, null);
+		});
+		toolbar.appendChild(btn);
+	});
+
+	// Content
+	const content = document.createElement("div");
+	content.classList.add("note-card-content");
+	content.contentEditable = "true";
+	content.innerHTML = note.html || note.content || "";
+
+	let saveTimeout;
+	content.addEventListener("input", () => {
+		clearTimeout(saveTimeout);
+		saveTimeout = setTimeout(() => {
+			note.html = content.innerHTML;
+			note.content = content.innerText;
+			note.updatedAt = Date.now();
+			saveProjects();
+		}, 500);
+	});
+
+	// Tags
+	const tagsRow = document.createElement("div");
+	tagsRow.classList.add("note-card-tags");
+
+	function renderTags() {
+		tagsRow.innerHTML = "";
+		(note.tags || []).forEach((tag, i) => {
+			const tagEl = document.createElement("span");
+			tagEl.classList.add("note-tag");
+			tagEl.textContent = tag;
+			const removeBtn = document.createElement("button");
+			removeBtn.classList.add("note-tag-remove");
+			removeBtn.textContent = "×";
+			removeBtn.addEventListener("click", () => {
+				note.tags.splice(i, 1);
+				saveProjects();
+				renderTags();
+				if (refreshPills) refreshPills();
+			});
+			tagEl.appendChild(removeBtn);
+			tagsRow.appendChild(tagEl);
+		});
+
+		const tagInput = document.createElement("input");
+		tagInput.classList.add("note-tag-input");
+		tagInput.placeholder = "+ tag";
+		tagInput.addEventListener("keydown", e => {
+			if (e.key === "Enter" || e.key === ",") {
+				e.preventDefault();
+				const val = tagInput.value.trim().replace(/,$/, "");
+				if (val && !(note.tags || []).includes(val)) {
+					if (!note.tags) note.tags = [];
+					note.tags.push(val);
+					saveProjects();
+					renderTags();
+					if (refreshPills) refreshPills();
+				} else {
+					tagInput.value = "";
+				}
+			}
+		});
+		tagsRow.appendChild(tagInput);
+	}
+
+	renderTags();
+
+	// Tool chips (when project has a Stack tab)
+	const hasStack = project?.tabs?.some(t => t.type === "stack");
+	let noteToolsRow = null;
+	if (hasStack && project.tools?.length) {
+		if (!Array.isArray(note.toolIds)) note.toolIds = [];
+		noteToolsRow = document.createElement("div");
+		noteToolsRow.classList.add("note-tools-row");
+
+		function renderNoteTools() {
+			noteToolsRow.innerHTML = "";
+			project.tools.forEach(tool => {
+				const chip = document.createElement("button");
+				chip.classList.add("note-tool-chip");
+				if (note.toolIds.includes(tool.id)) chip.classList.add("active");
+				const dot = document.createElement("span");
+				dot.classList.add("tool-badge-dot");
+				dot.style.background = tool.color || "#888";
+				chip.appendChild(dot);
+				chip.appendChild(document.createTextNode(tool.name));
+				chip.addEventListener("click", (e) => {
+					e.stopPropagation();
+					if (note.toolIds.includes(tool.id)) {
+						note.toolIds = note.toolIds.filter(id => id !== tool.id);
+					} else {
+						note.toolIds.push(tool.id);
+					}
+					note.updatedAt = Date.now();
+					saveProjects();
+					renderNoteTools();
+				});
+				noteToolsRow.appendChild(chip);
+			});
+		}
+		renderNoteTools();
+	}
+
+	card.appendChild(cardHeader);
+	card.appendChild(toolbar);
+	card.appendChild(content);
+	card.appendChild(tagsRow);
+	if (noteToolsRow) card.appendChild(noteToolsRow);
+
+	return card;
+}
+
+/* ======================
+   STACK TAB
+====================== */
+
+const TOOL_COLORS = ["#1a73e8","#188038","#e91e8c","#f59e0b","#9c27b0","#ef4444","#06b6d4","#FCFF4B"];
+
+function renderStackTab(project) {
+	if (!project.tools) project.tools = [];
+
+	const container = document.createElement("div");
+	container.classList.add("stack-tab");
+
+	const header = document.createElement("div");
+	header.classList.add("stack-header");
+
+	const title = document.createElement("h3");
+	title.style.cssText = "font-size:1rem;font-weight:700;color:var(--palette-dark);margin:0;";
+	title.textContent = "Stack";
+
+	const addBtn = document.createElement("button");
+	addBtn.classList.add("stack-add-btn");
+	addBtn.textContent = "+ Add Tool";
+
+	header.appendChild(title);
+	header.appendChild(addBtn);
+	container.appendChild(header);
+
+	// Add-tool form (shown on click)
+	const addForm = document.createElement("div");
+	addForm.classList.add("stack-tool-edit-form");
+	addForm.style.display = "none";
+	addForm.style.borderTop = "none";
+	addForm.style.borderRadius = "10px";
+	addForm.style.border = "1px solid var(--md-field-border)";
+
+	const nameInput = document.createElement("input");
+	nameInput.classList.add("stack-tool-input");
+	nameInput.placeholder = "Tool name (e.g. React)";
+
+	const descInput = document.createElement("input");
+	descInput.classList.add("stack-tool-input");
+	descInput.placeholder = "Short description (optional)";
+
+	const urlInput = document.createElement("input");
+	urlInput.classList.add("stack-tool-input");
+	urlInput.placeholder = "URL (optional)";
+
+	const colorRow = document.createElement("div");
+	colorRow.classList.add("stack-tool-edit-row");
+	let selectedColor = TOOL_COLORS[0];
+
+	TOOL_COLORS.forEach(hex => {
+		const btn = document.createElement("button");
+		btn.classList.add("stack-tool-color-btn");
+		btn.style.background = hex;
+		if (hex === selectedColor) btn.classList.add("active");
+		btn.addEventListener("click", () => {
+			selectedColor = hex;
+			colorRow.querySelectorAll(".stack-tool-color-btn").forEach(b => b.classList.remove("active"));
+			btn.classList.add("active");
+		});
+		colorRow.appendChild(btn);
+	});
+
+	const saveBtn = document.createElement("button");
+	saveBtn.classList.add("stack-tool-save-btn");
+	saveBtn.textContent = "Add Tool";
+
+	saveBtn.addEventListener("click", () => {
+		const name = nameInput.value.trim();
+		if (!name) { nameInput.focus(); return; }
+		project.tools.push({
+			id: self.crypto.randomUUID(),
+			name,
+			description: descInput.value.trim(),
+			url: urlInput.value.trim(),
+			color: selectedColor,
+		});
+		saveProjects();
+		nameInput.value = ""; descInput.value = ""; urlInput.value = "";
+		addForm.style.display = "none";
+		renderTools();
+	});
+
+	addBtn.addEventListener("click", () => {
+		addForm.style.display = addForm.style.display === "none" ? "flex" : "none";
+		if (addForm.style.display === "flex") nameInput.focus();
+	});
+
+	addForm.appendChild(nameInput);
+	addForm.appendChild(descInput);
+	addForm.appendChild(urlInput);
+	addForm.appendChild(colorRow);
+	addForm.appendChild(saveBtn);
+	container.appendChild(addForm);
+
+	const toolsList = document.createElement("div");
+	toolsList.classList.add("stack-tools-list");
+	container.appendChild(toolsList);
+
+	function renderTools() {
+		toolsList.innerHTML = "";
+
+		if (project.tools.length === 0) {
+			const empty = document.createElement("div");
+			empty.classList.add("stack-empty-tools");
+			empty.textContent = "No tools yet — click + Add Tool to start.";
+			toolsList.appendChild(empty);
+			return;
+		}
+
+		project.tools.forEach((tool, toolIdx) => {
+			const row = document.createElement("div");
+			row.classList.add("stack-tool-row");
+
+			// Count todos using this tool
+			const relatedTodos = project.todos.filter(t =>
+				Array.isArray(t.toolIds) && t.toolIds.includes(tool.id)
+			);
+
+			const hdr = document.createElement("div");
+			hdr.classList.add("stack-tool-header");
+
+			const dot = document.createElement("span");
+			dot.classList.add("stack-tool-color-dot");
+			dot.style.background = tool.color || "#888";
+
+			const name = document.createElement("span");
+			name.classList.add("stack-tool-name");
+			name.textContent = tool.name;
+
+			const desc = document.createElement("span");
+			desc.classList.add("stack-tool-desc");
+			desc.textContent = tool.description || (tool.url || "");
+
+			const count = document.createElement("span");
+			count.classList.add("stack-tool-count");
+			count.textContent = `${relatedTodos.length} card${relatedTodos.length !== 1 ? "s" : ""}`;
+
+			const actions = document.createElement("div");
+			actions.classList.add("stack-tool-actions");
+
+			const delBtn = document.createElement("button");
+			delBtn.classList.add("stack-tool-delete-btn");
+			delBtn.title = "Delete tool";
+			delBtn.textContent = "✕";
+			delBtn.addEventListener("click", (e) => {
+				e.stopPropagation();
+				// Remove this tool from all todos
+				project.todos.forEach(t => {
+					if (Array.isArray(t.toolIds)) t.toolIds = t.toolIds.filter(id => id !== tool.id);
+				});
+				project.tools.splice(toolIdx, 1);
+				saveProjects();
+				renderTools();
+			});
+
+			const chevron = document.createElement("span");
+			chevron.classList.add("stack-tool-chevron");
+			chevron.textContent = "▾";
+
+			actions.appendChild(delBtn);
+			hdr.appendChild(dot);
+			hdr.appendChild(name);
+			hdr.appendChild(desc);
+			hdr.appendChild(count);
+			hdr.appendChild(actions);
+			hdr.appendChild(chevron);
+
+			// Expanded body (todos using this tool)
+			const body = document.createElement("div");
+			body.classList.add("stack-tool-expanded-body");
+
+			hdr.addEventListener("click", (e) => {
+				if (e.target.closest(".stack-tool-actions")) return;
+				row.classList.toggle("expanded");
+				if (row.classList.contains("expanded") && body.children.length === 0) {
+					buildExpandedBody();
+				}
+			});
+
+			function buildExpandedBody() {
+				body.innerHTML = "";
+				if (relatedTodos.length === 0) {
+					const msg = document.createElement("div");
+					msg.style.cssText = "font-size:0.8rem;color:var(--md-label-color);padding:8px 0;";
+					msg.textContent = "No cards assigned to this tool yet.";
+					body.appendChild(msg);
+					return;
+				}
+				relatedTodos.forEach(todo => {
+					const item = document.createElement("div");
+					item.classList.add("stack-todo-item");
+					const t = document.createElement("span");
+					t.classList.add("stack-todo-title");
+					t.textContent = todo.title || "Untitled";
+					const s = document.createElement("span");
+					s.classList.add("stack-todo-status");
+					s.textContent = todo.status || "";
+					item.appendChild(t);
+					item.appendChild(s);
+					body.appendChild(item);
+				});
+			}
+
+			row.appendChild(hdr);
+			row.appendChild(body);
+			toolsList.appendChild(row);
+		});
+	}
+
+	renderTools();
+	todoContainer.innerHTML = "";
+	todoContainer.appendChild(container);
+}
+
+/* ======================
    KANBAN COLUMN BUILDER (shared)
 ====================== */
 
@@ -1690,7 +2544,9 @@ function buildKanbanColumn(col, project, epicId, filterByEpic) {
 		? sortedArray(project.todos.filter(t => {
 			if (epicId === null) return !t.epicId || !project.epics.some(e => e.id === t.epicId);
 			return t.epicId === epicId;
-		}).filter(t => t.status === col.label))
+		}).filter(t => t.status === col.label)
+		  .filter(t => !stackToolFilter || (Array.isArray(t.toolIds) && t.toolIds.includes(stackToolFilter)))
+		  .filter(t => !todoTagFilter || (Array.isArray(t.tags) && t.tags.includes(todoTagFilter))))
 		: [];
 
 	todos.forEach(todo => {
@@ -1708,6 +2564,7 @@ function buildKanbanColumn(col, project, epicId, filterByEpic) {
 				});
 			},
 			isInbox: false,
+			project,
 		});
 		cardArea.appendChild(card);
 	});
@@ -2062,22 +2919,25 @@ function renderFlatKanban(project) {
 
 	todoContainer.appendChild(addColBtn);
 
-	sortedArray(project.todos).forEach((todo) => {
-		const proj = getCurrentProject();
+	sortedArray(project.todos)
+		.filter(t => !stackToolFilter || (Array.isArray(t.toolIds) && t.toolIds.includes(stackToolFilter)))
+		.filter(t => !todoTagFilter || (Array.isArray(t.tags) && t.tags.includes(todoTagFilter)))
+		.forEach((todo) => {
 		const card = buildTodoCard(todo, {
 			save: () => { saveProjects(); renderTodos(); },
 			delete: () => {
-				const index = proj.todos.findIndex(t => t.id === todo.id);
-				proj.removeTodo(todo.id);
+				const index = project.todos.findIndex(t => t.id === todo.id);
+				project.removeTodo(todo.id);
 				saveProjects();
 				renderTodos();
 				showUndoToast("Card deleted", () => {
-					proj.todos.splice(index, 0, todo);
+					project.todos.splice(index, 0, todo);
 					saveProjects();
 					renderTodos();
 				});
 			},
 			isInbox: false,
+			project,
 		});
 
 		const matchedCol = columns.find(c => c.label === todo.status);
@@ -2218,6 +3078,7 @@ function renderInbox() {
 	todoContainer.classList.remove("swimlane-mode");
 	todoContainer.classList.remove("overview-view");
 	projectTitle.textContent = "Inbox";
+	projectCodeBadge.style.display = "none";
 
 	projectTabsContainer.innerHTML = "";
 
@@ -2298,8 +3159,31 @@ function renderOverview() {
 	todoContainer.classList.remove("swimlane-mode");
 	todoContainer.classList.add("overview-view");
 	projectTitle.textContent = "Overview";
-	projectTabsContainer.innerHTML = "";
+	projectCodeBadge.style.display = "none";
 	sortBarContainer.innerHTML = "";
+
+	// Tab bar: Dashboard | Notes (uses same project-tab-bar style)
+	projectTabsContainer.innerHTML = "";
+	const tabBar = document.createElement("div");
+	tabBar.classList.add("project-tab-bar");
+
+	[{ id: "dashboard", label: "Dashboard" }, { id: "notes", label: "Notes" }].forEach(({ id, label }) => {
+		const btn = document.createElement("button");
+		btn.classList.add("project-tab");
+		if (overviewTab === id) btn.classList.add("active");
+		btn.textContent = label;
+		btn.addEventListener("click", () => {
+			overviewTab = id;
+			renderOverview();
+		});
+		tabBar.appendChild(btn);
+	});
+	projectTabsContainer.appendChild(tabBar);
+
+	if (overviewTab === "notes") {
+		renderOverviewNotes();
+		return;
+	}
 
 	const completedLabels = columns.filter(c => c.isCompleted).map(c => c.label);
 	const now = Date.now();
@@ -2458,6 +3342,333 @@ function renderOverview() {
 	renderSelectionBar();
 }
 
+function renderOverviewNotes() {
+	todoContainer.innerHTML = "";
+	todoContainer.classList.add("overview-view");
+
+	// Collect all project notes (with source project)
+	const allProjectNotes = projects.flatMap(p =>
+		(p.notes || []).map(n => ({ note: n, project: p }))
+	);
+	const generalNotes = userPrefs.generalNotes;
+
+	// Build filter state
+	let activeCategory = null;
+	let activeTag = null;
+
+	// Gather all unique categories and tags
+	const allCategories = [...new Set([
+		...allProjectNotes.map(({ note }) => note.category).filter(Boolean),
+		...generalNotes.map(n => n.category).filter(Boolean),
+	])];
+	const allTags = [...new Set([
+		...allProjectNotes.flatMap(({ note }) => note.tags || []),
+		...generalNotes.flatMap(n => n.tags || []),
+	])];
+
+	const view = document.createElement("div");
+	view.classList.add("overview-notes-view");
+
+	// Filter bar
+	const filterRow = document.createElement("div");
+	filterRow.classList.add("overview-notes-filter-row");
+
+	function rebuildFilter() {
+		filterRow.innerHTML = "";
+
+		// Category group
+		if (allCategories.length > 0) {
+			const catGroup = document.createElement("div");
+			catGroup.classList.add("overview-notes-filter-group");
+			const catLabel = document.createElement("span");
+			catLabel.classList.add("overview-notes-filter-label");
+			catLabel.textContent = "Category:";
+			catGroup.appendChild(catLabel);
+
+			const allCat = document.createElement("button");
+			allCat.classList.add("overview-notes-pill");
+			if (!activeCategory) allCat.classList.add("active");
+			allCat.textContent = "All";
+			allCat.addEventListener("click", () => { activeCategory = null; rebuildFilter(); rebuildGrid(); });
+			catGroup.appendChild(allCat);
+
+			allCategories.forEach(cat => {
+				const pill = document.createElement("button");
+				pill.classList.add("overview-notes-pill");
+				if (activeCategory === cat) pill.classList.add("active");
+				pill.textContent = cat;
+				pill.addEventListener("click", () => { activeCategory = cat; rebuildFilter(); rebuildGrid(); });
+				catGroup.appendChild(pill);
+			});
+			filterRow.appendChild(catGroup);
+		}
+
+		// Tag group
+		if (allTags.length > 0) {
+			const tagGroup = document.createElement("div");
+			tagGroup.classList.add("overview-notes-filter-group");
+			const tagLabel = document.createElement("span");
+			tagLabel.classList.add("overview-notes-filter-label");
+			tagLabel.textContent = "Tag:";
+			tagGroup.appendChild(tagLabel);
+
+			const allTag = document.createElement("button");
+			allTag.classList.add("overview-notes-pill");
+			if (!activeTag) allTag.classList.add("active");
+			allTag.textContent = "All";
+			allTag.addEventListener("click", () => { activeTag = null; rebuildFilter(); rebuildGrid(); });
+			tagGroup.appendChild(allTag);
+
+			allTags.forEach(tag => {
+				const pill = document.createElement("button");
+				pill.classList.add("overview-notes-pill");
+				if (activeTag === tag) pill.classList.add("active");
+				pill.textContent = `#${tag}`;
+				pill.addEventListener("click", () => { activeTag = tag; rebuildFilter(); rebuildGrid(); });
+				tagGroup.appendChild(pill);
+			});
+			filterRow.appendChild(tagGroup);
+		}
+	}
+
+	// Notes grid
+	const grid = document.createElement("div");
+	grid.classList.add("notes-grid");
+
+	function rebuildGrid() {
+		grid.innerHTML = "";
+
+		// "Add General Note" — always first, top-left
+		const addCard = document.createElement("div");
+		addCard.classList.add("note-add-general-card");
+		addCard.innerHTML = `<span class="note-add-general-icon">+</span><span>Add General Note</span>`;
+		addCard.addEventListener("click", () => {
+			const newNote = {
+				id: self.crypto.randomUUID(),
+				content: "",
+				html: "",
+				tags: [],
+				category: "",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			};
+			userPrefs.generalNotes.unshift(newNote);
+			saveUserPrefs();
+			rebuildGrid();
+		});
+		grid.appendChild(addCard);
+
+		const filteredProjectNotes = allProjectNotes.filter(({ note }) => {
+			if (activeCategory && note.category !== activeCategory) return false;
+			if (activeTag && !(note.tags || []).includes(activeTag)) return false;
+			return true;
+		});
+
+		const filteredGeneral = generalNotes.filter(note => {
+			if (activeCategory && note.category !== activeCategory) return false;
+			if (activeTag && !(note.tags || []).includes(activeTag)) return false;
+			return true;
+		});
+
+		// General notes (right after add button)
+		filteredGeneral.forEach(note => {
+			const card = buildOverviewNoteCard(note, null, rebuildGrid, rebuildFilter);
+			grid.appendChild(card);
+		});
+
+		// Project notes
+		filteredProjectNotes.forEach(({ note, project }) => {
+			const card = buildOverviewNoteCard(note, project, rebuildGrid, rebuildFilter);
+			grid.appendChild(card);
+		});
+	}
+
+	rebuildFilter();
+	rebuildGrid();
+
+	view.append(filterRow, grid);
+	todoContainer.appendChild(view);
+}
+
+function buildOverviewNoteCard(note, project, rebuildGrid, rebuildFilter) {
+	const card = document.createElement("div");
+	card.classList.add("note-card");
+
+	// Project badge
+	if (project && project.code) {
+		const badge = document.createElement("span");
+		badge.classList.add("note-card-project-badge");
+		badge.textContent = project.code;
+		card.appendChild(badge);
+	} else if (!project) {
+		const badge = document.createElement("span");
+		badge.classList.add("note-card-project-badge");
+		badge.style.background = "rgba(150,150,150,0.15)";
+		badge.style.color = "#888";
+		badge.textContent = "General";
+		card.appendChild(badge);
+	}
+
+	// Format toolbar (same as project notes tab)
+	const toolbar = document.createElement("div");
+	toolbar.classList.add("note-card-toolbar");
+	[
+		{ cmd: "bold",               label: "<strong>B</strong>", title: "Bold" },
+		{ cmd: "italic",             label: "<em>I</em>",          title: "Italic" },
+		{ cmd: "insertUnorderedList", label: "• List",             title: "Bullet list" },
+	].forEach(({ cmd, label, title }) => {
+		const btn = document.createElement("button");
+		btn.classList.add("note-fmt-btn");
+		btn.innerHTML = label;
+		btn.title = title;
+		btn.type = "button";
+		btn.addEventListener("mousedown", e => { e.preventDefault(); document.execCommand(cmd, false, null); });
+		toolbar.appendChild(btn);
+	});
+
+	// Content area (rich text)
+	const body = document.createElement("div");
+	body.classList.add("note-card-content");
+	body.contentEditable = "true";
+	body.innerHTML = note.html || note.content || "";
+	let saveTimeout;
+	body.addEventListener("input", () => {
+		clearTimeout(saveTimeout);
+		saveTimeout = setTimeout(() => {
+			note.html = body.innerHTML;
+			note.content = body.innerText;
+			note.updatedAt = Date.now();
+			if (project) saveProjects();
+			else saveUserPrefs();
+		}, 400);
+	});
+
+	card.appendChild(toolbar);
+	card.appendChild(body);
+
+	// Tags row
+	const tagsRow = document.createElement("div");
+	tagsRow.classList.add("note-tags-row");
+
+	function rebuildTagsRow() {
+		tagsRow.innerHTML = "";
+		(note.tags || []).forEach(tag => {
+			const chip = document.createElement("span");
+			chip.classList.add("note-tag-chip");
+			chip.textContent = `#${tag}`;
+			chip.addEventListener("click", () => {
+				note.tags = note.tags.filter(t => t !== tag);
+				note.updatedAt = Date.now();
+				if (project) saveProjects(); else saveUserPrefs();
+				rebuildTagsRow();
+				rebuildFilter();
+				rebuildGrid();
+			});
+			tagsRow.appendChild(chip);
+		});
+
+		const tagInput = document.createElement("input");
+		tagInput.placeholder = "+ tag";
+		tagInput.classList.add("note-tag-input");
+		tagInput.addEventListener("keydown", e => {
+			if (e.key === "Enter" || e.key === ",") {
+				e.preventDefault();
+				const val = tagInput.value.trim().replace(/^#/, "").toLowerCase();
+				if (val && !(note.tags || []).includes(val)) {
+					if (!note.tags) note.tags = [];
+					note.tags.push(val);
+					note.updatedAt = Date.now();
+					if (project) saveProjects(); else saveUserPrefs();
+					rebuildTagsRow();
+					rebuildFilter();
+				}
+				tagInput.value = "";
+			}
+		});
+		tagsRow.appendChild(tagInput);
+	}
+
+	rebuildTagsRow();
+	card.appendChild(tagsRow);
+
+	// Meta: category + delete
+	const meta = document.createElement("div");
+	meta.classList.add("note-meta");
+
+	const catInput = document.createElement("input");
+	catInput.classList.add("note-category-input");
+	catInput.value = note.category || "";
+	catInput.placeholder = "Category";
+	catInput.addEventListener("blur", () => {
+		note.category = catInput.value.trim().toUpperCase();
+		catInput.value = note.category;
+		note.updatedAt = Date.now();
+		if (project) saveProjects(); else saveUserPrefs();
+		rebuildFilter();
+	});
+	catInput.addEventListener("keydown", e => { if (e.key === "Enter") catInput.blur(); });
+
+	const delBtn = document.createElement("button");
+	delBtn.classList.add("note-delete-btn");
+	delBtn.textContent = "×";
+	delBtn.title = "Delete note";
+	delBtn.addEventListener("click", () => {
+		if (project) {
+			project.notes = (project.notes || []).filter(n => n.id !== note.id);
+			saveProjects();
+		} else {
+			userPrefs.generalNotes = userPrefs.generalNotes.filter(n => n.id !== note.id);
+			saveUserPrefs();
+		}
+		rebuildGrid();
+		rebuildFilter();
+	});
+
+	meta.append(catInput, delBtn);
+	card.appendChild(meta);
+
+	return card;
+}
+
+function buildStackFilterBar(project) {
+	if (!project.tools?.length) return null;
+
+	const bar = document.createElement("div");
+	bar.classList.add("epic-filter-bar"); // reuse same styles
+
+	const label = document.createElement("span");
+	label.classList.add("stack-filter-label");
+	label.textContent = "Tool:";
+	bar.appendChild(label);
+
+	const allPill = document.createElement("button");
+	allPill.classList.add("stack-filter-pill");
+	if (!stackToolFilter) allPill.classList.add("active");
+	allPill.textContent = "All";
+	allPill.addEventListener("click", () => { stackToolFilter = null; renderTodos(); });
+	bar.appendChild(allPill);
+
+	project.tools.forEach(tool => {
+		const pill = document.createElement("button");
+		pill.classList.add("stack-filter-pill");
+		if (stackToolFilter === tool.id) pill.classList.add("active");
+
+		const dot = document.createElement("span");
+		dot.classList.add("tool-badge-dot");
+		dot.style.cssText = `background:${tool.color || "#888"};width:8px;height:8px;display:inline-block;border-radius:50%;margin-right:5px;`;
+		pill.appendChild(dot);
+		pill.appendChild(document.createTextNode(tool.name));
+
+		pill.addEventListener("click", () => {
+			stackToolFilter = stackToolFilter === tool.id ? null : tool.id;
+			renderTodos();
+		});
+		bar.appendChild(pill);
+	});
+
+	return bar;
+}
+
 function buildEpicFilterBar(project) {
 	if (!project.epics.length) return null;
 
@@ -2493,6 +3704,34 @@ function buildEpicFilterBar(project) {
 	return bar;
 }
 
+function buildTodoTagFilterBar(tags) {
+	const bar = document.createElement("div");
+	bar.classList.add("epic-filter-bar");
+
+	const label = document.createElement("span");
+	label.classList.add("stack-filter-label");
+	label.textContent = "Tag:";
+	bar.appendChild(label);
+
+	const allPill = document.createElement("button");
+	allPill.classList.add("stack-filter-pill");
+	if (!todoTagFilter) allPill.classList.add("active");
+	allPill.textContent = "All";
+	allPill.addEventListener("click", () => { todoTagFilter = null; renderTodos(); });
+	bar.appendChild(allPill);
+
+	tags.forEach(tag => {
+		const pill = document.createElement("button");
+		pill.classList.add("stack-filter-pill");
+		if (todoTagFilter === tag) pill.classList.add("active");
+		pill.textContent = `#${tag}`;
+		pill.addEventListener("click", () => { todoTagFilter = todoTagFilter === tag ? null : tag; renderTodos(); });
+		bar.appendChild(pill);
+	});
+
+	return bar;
+}
+
 function renderTodos() {
 	if (currentView === "overview") { renderOverview(); return; }
 	if (currentView === "inbox") { renderInbox(); return; }
@@ -2503,9 +3742,11 @@ function renderTodos() {
 	if (!project.resources) project.resources = { notes: "" };
 	if (!project.epics) project.epics = [];
 
-	// Reset epic filter when switching projects
+	// Reset filters when switching projects
 	if (currentProjectId !== lastEpicFilterProjectId) {
 		epicFilterIds.clear();
+		stackToolFilter = null;
+		todoTagFilter = null;
 		lastEpicFilterProjectId = currentProjectId;
 	}
 
@@ -2515,12 +3756,65 @@ function renderTodos() {
 	todoContainer.classList.remove("overview-view");
 	projectTitle.textContent = project.title;
 
-	projectTabsContainer.innerHTML = "";
-	projectTabsContainer.appendChild(buildProjectTabBar());
+	// Code badge — use onclick (single handler, no accumulation)
+	if (!project.code) project.code = generateProjectCode(project.title);
+	projectCodeBadge.textContent = project.code;
+	projectCodeBadge.style.display = "";
+	projectCodeBadge.onclick = () => {
+		projectCodeBadge.style.display = "none";
+		const input = document.createElement("input");
+		input.value = project.code;
+		input.maxLength = 5;
+		input.classList.add("project-code-input");
+		projectCodeBadge.insertAdjacentElement("afterend", input);
+		input.focus(); input.select();
+		function saveCode() {
+			const newCode = input.value.trim().toUpperCase().slice(0, 5) || project.code;
+			project.code = newCode;
+			projectCodeBadge.textContent = newCode;
+			projectCodeBadge.style.display = "";
+			input.remove();
+			saveProjects();
+			renderProjects();
+			renderTodos();
+		}
+		input.addEventListener("blur", saveCode);
+		input.addEventListener("keydown", e => {
+			if (e.key === "Enter") input.blur();
+			if (e.key === "Escape") { projectCodeBadge.style.display = ""; input.remove(); }
+		});
+	};
 
-	if (currentProjectTab === "resources") {
+	// Ensure new fields exist
+	if (!project.tabs || !project.tabs.length) project.tabs = defaultProjectTabs();
+	if (!project.notes) project.notes = [];
+	if (!project.tools) project.tools = [];
+
+	projectTabsContainer.innerHTML = "";
+	projectTabsContainer.appendChild(buildProjectTabBar(project));
+
+	const activeTab = project.tabs.find(t => t.id === currentProjectTab) || project.tabs[0];
+	if (!activeTab || activeTab.id !== currentProjectTab) currentProjectTab = project.tabs[0].id;
+
+	if (activeTab?.type === "resources") {
 		sortBarContainer.innerHTML = "";
 		renderResourcesPanel(project);
+		renderSelectionBar();
+		return;
+	}
+
+	if (activeTab?.type === "notes") {
+		sortBarContainer.innerHTML = "";
+		addTodoBtn.style.display = "none";
+		renderNotesTab(project);
+		renderSelectionBar();
+		return;
+	}
+
+	if (activeTab?.type === "stack") {
+		sortBarContainer.innerHTML = "";
+		addTodoBtn.style.display = "none";
+		renderStackTab(project);
 		renderSelectionBar();
 		return;
 	}
@@ -2531,6 +3825,18 @@ function renderTodos() {
 	if (project.epics.length > 0) {
 		const filterBar = buildEpicFilterBar(project);
 		if (filterBar) sortBarContainer.appendChild(filterBar);
+	}
+
+	// Stack tool filter (shown when project has a Stack tab)
+	if (project.tabs?.some(t => t.type === "stack") && project.tools?.length) {
+		const stackFilterBar = buildStackFilterBar(project);
+		if (stackFilterBar) sortBarContainer.appendChild(stackFilterBar);
+	}
+
+	// Tag filter bar
+	const allTodoTags = [...new Set(project.todos.flatMap(t => t.tags || []).filter(Boolean))];
+	if (allTodoTags.length > 0) {
+		sortBarContainer.appendChild(buildTodoTagFilterBar(allTodoTags));
 	}
 
 	if (project.epics.length === 0) {
@@ -2750,6 +4056,8 @@ function renderProjects() {
 
 			if (dragState?.todoIds) {
 				// Card drop onto project
+				const srcProjectDrop = dragState.source !== "inbox"
+					? projects.find(p => p.id === dragState.projectId) : null;
 				dragState.todoIds.forEach(todoId => {
 					let todo;
 					if (dragState.source === "inbox") {
@@ -2757,9 +4065,8 @@ function renderProjects() {
 						if (todo) inbox.splice(inbox.indexOf(todo), 1);
 					} else {
 						if (dragState.projectId === project.id) return;
-						const src = projects.find(p => p.id === dragState.projectId);
-						todo = src?.todos.find(t => t.id === todoId);
-						if (todo) src.removeTodo(todoId);
+						todo = srcProjectDrop?.todos.find(t => t.id === todoId);
+						if (todo) srcProjectDrop.removeTodo(todoId);
 					}
 					if (todo) {
 						const validStatuses = getColumnLabels();
@@ -2767,9 +4074,11 @@ function renderProjects() {
 							todo.status = validStatuses.find(l => l.toLowerCase().includes("progress")) || validStatuses[0];
 						}
 						todo.epicId = null;
+						todo.number = 0;
 						project.addTodo(todo);
 					}
 				});
+				if (srcProjectDrop) renumberProjectTodos(srcProjectDrop);
 				selectedTodos.clear();
 				dragState = null;
 				saveInbox();
@@ -2778,6 +4087,14 @@ function renderProjects() {
 				renderTodos();
 			}
 		});
+
+		// Code badge in sidebar
+		if (project.code) {
+			const sideBadge = document.createElement("span");
+			sideBadge.classList.add("sidebar-project-code");
+			sideBadge.textContent = project.code;
+			item.appendChild(sideBadge);
+		}
 
 		const name = document.createElement("span");
 		name.textContent = project.title;
@@ -3017,6 +4334,43 @@ function openUserSettings(anchorEl, user) {
 	div2.classList.add("user-settings-divider");
 	popup.appendChild(div2);
 
+	// ── Dark mode toggle ──
+	const themeSection = document.createElement("div");
+	themeSection.classList.add("user-settings-section");
+	const themeRow = document.createElement("div");
+	themeRow.classList.add("user-settings-theme-row");
+	const themeLabel = document.createElement("span");
+	themeLabel.classList.add("user-settings-theme-label");
+	themeLabel.textContent = "Dark mode";
+
+	const themeSwitch = document.createElement("label");
+	themeSwitch.classList.add("theme-toggle-switch");
+	const themeCheckbox = document.createElement("input");
+	themeCheckbox.type = "checkbox";
+	themeCheckbox.checked = document.documentElement.dataset.theme === "dark";
+	const themeTrack = document.createElement("span");
+	themeTrack.classList.add("theme-toggle-track");
+	themeSwitch.appendChild(themeCheckbox);
+	themeSwitch.appendChild(themeTrack);
+
+	themeCheckbox.addEventListener("change", () => {
+		const next = themeCheckbox.checked ? "dark" : "light";
+		userPrefs.theme = next;
+		saveUserPrefs();
+		localStorage.setItem("theme", next);
+		applyTheme(next);
+	});
+
+	themeRow.appendChild(themeLabel);
+	themeRow.appendChild(themeSwitch);
+	themeSection.appendChild(themeRow);
+	popup.appendChild(themeSection);
+
+	// ── Divider ──
+	const div3 = document.createElement("div");
+	div3.classList.add("user-settings-divider");
+	popup.appendChild(div3);
+
 	// ── Sign out ──
 	const signOutBtn = document.createElement("button");
 	signOutBtn.classList.add("user-settings-signout");
@@ -3056,23 +4410,12 @@ function openUserSettings(anchorEl, user) {
 function applyTheme(theme) {
 	if (theme === "dark") {
 		document.documentElement.dataset.theme = "dark";
-		themeToggleBtn.title = "Switch to light mode";
 	} else {
 		delete document.documentElement.dataset.theme;
-		themeToggleBtn.title = "Switch to dark mode";
 	}
 }
 
 applyTheme(localStorage.getItem("theme") || "light");
-
-themeToggleBtn.addEventListener("click", () => {
-	const isDark = document.documentElement.dataset.theme === "dark";
-	const next = isDark ? "light" : "dark";
-	userPrefs.theme = next;
-	saveUserPrefs();
-	localStorage.setItem("theme", next); // fast re-load cache
-	applyTheme(next);
-});
 
 addTodoBtn.addEventListener("click", () => {
 	createTodoForm(

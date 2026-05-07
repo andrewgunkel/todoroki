@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.dataset.theme='dark';}catch(e){}</script>
     <link rel="stylesheet" href="styles.css">
     <title>Todoroki: Todo List</title>
 </head>
@@ -15,10 +16,12 @@
 	<div id="main">
 		<div id="main-header">
 			<button id="sidebar-toggle-btn" title="Toggle menu" aria-label="Toggle sidebar"><span></span></button>
-			<h2 id="project-title"></h2>
+			<div id="project-title-wrap">
+				<h2 id="project-title"></h2>
+				<span id="project-code-badge" class="project-code-badge" style="display:none" title="Click to edit project code"></span>
+			</div>
 			<div id="header-actions">
 				<button id="add-todo-btn">+ Add Todo to Project</button>
-				<button id="theme-toggle-btn" title="Switch to dark mode"></button>
 			</div>
 		</div>
 		<div id="form-container"></div>

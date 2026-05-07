@@ -11,6 +11,9 @@ function Project(title, description) {
 
 
 Project.prototype.addTodo = function(todo) {
+    if (!this.todoCounter) this.todoCounter = 0;
+    this.todoCounter++;
+    todo.number = this.todoCounter;
     this.todos.push(todo);
 }
 

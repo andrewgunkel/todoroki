@@ -52,6 +52,7 @@ function createTodoForm(formContainer, addTodoBtn, project, saveTodos, renderTod
 	const checklist = createField("Checklist (comma-separated)", "todo-checklist");
 	const link = createField("Reference Link", "todo-link", "url");
 	const status = createField("Status", "todo-status", "select", statusOptions);
+	const tags = createField("Tags (comma-separated)", "todo-tags");
 
 	const submit = document.createElement("button");
 	submit.type = "submit";
@@ -66,6 +67,10 @@ function createTodoForm(formContainer, addTodoBtn, project, saveTodos, renderTod
 		addTodoBtn.disabled = false;
 	});
 
+	const formActions = document.createElement("div");
+	formActions.classList.add("form-actions");
+	formActions.append(submit, cancel);
+
 	form.append(
 		title.group,
 		description.group,
@@ -75,8 +80,8 @@ function createTodoForm(formContainer, addTodoBtn, project, saveTodos, renderTod
 		checklist.group,
 		link.group,
 		status.group,
-		submit,
-		cancel
+		tags.group,
+		formActions
 	);
 
 	formContainer.appendChild(form);
@@ -105,6 +110,7 @@ const todo = new Todo(
 	status.input.value
 );
 
+		todo.tags = tags.input.value.split(",").map(t => t.trim().toLowerCase()).filter(Boolean);
 		project.addTodo(todo);
 
 		saveTodos();
