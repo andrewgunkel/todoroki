@@ -1965,6 +1965,17 @@ body {
     #new-todo-form .form-group:nth-child(6) {
         grid-column: span 1;
     }
+
+    .form-actions {
+        grid-column: span 1;
+        flex-direction: column-reverse;
+        gap: 8px;
+    }
+
+    .form-actions button {
+        width: 100%;
+        justify-content: center;
+    }
 }
 
 /* ======================
