@@ -58,6 +58,7 @@ let todoTagFilter = null; // null = show all, string = tag to filter by
 let dragHoverTimer = null;
 let syncTimer = null;
 let overviewTab = "dashboard"; // "dashboard" | "notes"
+let lastRemoteSync = 0; // timestamp of the last successful pull from Supabase
 
 // Cross-device user preferences — loaded from Supabase after auth
 let userPrefs = { theme: "light", avatarColor: null, displayName: "", generalNotes: [] };
@@ -367,7 +368,7 @@ async function loadUserPrefs() {
 async function saveUserPrefs() {
 	if (!currentUser) return;
 	try {
-		await supabase.from("user_preferences").upsert(
+		let { error } = await supabase.from("user_preferences").upsert(
 			{
 				user_id:       currentUser.id,
 				theme:         userPrefs.theme,
@@ -378,6 +379,20 @@ async function saveUserPrefs() {
 			},
 			{ onConflict: "user_id" }
 		);
+		if (error && error.code === "42703") {
+			// general_notes column not yet migrated — retry without it
+			({ error } = await supabase.from("user_preferences").upsert(
+				{
+					user_id:      currentUser.id,
+					theme:        userPrefs.theme,
+					avatar_color: userPrefs.avatarColor,
+					display_name: userPrefs.displayName,
+					updated_at:   new Date().toISOString(),
+				},
+				{ onConflict: "user_id" }
+			));
+		}
+		if (error) throw error;
 	} catch (err) {
 		console.error("Supabase prefs sync error:", err);
 	}
@@ -454,15 +469,14 @@ async function syncAllToSupabase() {
 	if (!currentUser) return;
 	const uid = currentUser.id;
 
+	// 1. Upsert all projects
 	try {
-		// 1. Upsert all projects
 		const projectRows = projects.map((p, i) => buildProjectRow(p, i));
 		if (projectRows.length > 0) {
 			const { error } = await supabase.from("projects").upsert(projectRows, { onConflict: "id" });
 			if (error) throw error;
 		}
-
-		// 2. Remove projects the user deleted
+		// Remove deleted projects
 		const keepProjectIds = projectRows.map(p => p.id);
 		if (keepProjectIds.length > 0) {
 			await supabase.from("projects").delete()
@@ -471,18 +485,26 @@ async function syncAllToSupabase() {
 		} else {
 			await supabase.from("projects").delete().eq("user_id", uid);
 		}
+	} catch (err) {
+		console.error("Supabase projects sync error:", err);
+	}
 
-		// 3. Upsert all project todos
+	// 2. Upsert all project todos (with graceful column fallback)
+	try {
 		const todoRows = projects.flatMap((p) =>
 			p.todos.map((t, i) => buildTodoRow(t, p.id, i))
 		);
 		if (todoRows.length > 0) {
-			const { error } = await supabase.from("todos").upsert(todoRows, { onConflict: "id" });
+			let { error } = await supabase.from("todos").upsert(todoRows, { onConflict: "id" });
+			if (error && error.code === "42703") {
+				// Unknown column — retry without new optional columns
+				const safeRows = todoRows.map(({ tags, ...rest }) => rest);
+				({ error } = await supabase.from("todos").upsert(safeRows, { onConflict: "id" }));
+			}
 			if (error) throw error;
 		}
-
-		// 4. Remove project todos that no longer exist (not inbox)
-		const keepTodoIds = todoRows.map(t => t.id);
+		// Remove deleted project todos
+		const keepTodoIds = projects.flatMap(p => p.todos.map(t => t.id));
 		if (keepTodoIds.length > 0) {
 			await supabase.from("todos").delete()
 				.eq("user_id", uid)
@@ -493,16 +515,23 @@ async function syncAllToSupabase() {
 				.eq("user_id", uid)
 				.not("project_id", "is", null);
 		}
+	} catch (err) {
+		console.error("Supabase todos sync error:", err);
+	}
 
-		// 5. Upsert inbox todos
+	// 3. Upsert inbox todos
+	try {
 		const inboxRows = inbox.map((t, i) => buildTodoRow(t, null, i));
 		if (inboxRows.length > 0) {
-			const { error } = await supabase.from("todos").upsert(inboxRows, { onConflict: "id" });
+			let { error } = await supabase.from("todos").upsert(inboxRows, { onConflict: "id" });
+			if (error && error.code === "42703") {
+				const safeRows = inboxRows.map(({ tags, ...rest }) => rest);
+				({ error } = await supabase.from("todos").upsert(safeRows, { onConflict: "id" }));
+			}
 			if (error) throw error;
 		}
-
-		// 6. Remove inbox todos that no longer exist
-		const keepInboxIds = inboxRows.map(t => t.id);
+		// Remove deleted inbox todos
+		const keepInboxIds = inbox.map(t => t.id);
 		if (keepInboxIds.length > 0) {
 			await supabase.from("todos").delete()
 				.eq("user_id", uid)
@@ -514,7 +543,7 @@ async function syncAllToSupabase() {
 				.is("project_id", null);
 		}
 	} catch (err) {
-		console.error("Supabase sync error:", err);
+		console.error("Supabase inbox sync error:", err);
 	}
 }
 
@@ -614,7 +643,49 @@ async function loadFromSupabase() {
 	});
 
 	currentProjectId = projects[0]?.id ?? null;
+	lastRemoteSync = Date.now();
 }
+
+// Pull fresh data from Supabase and re-render without disrupting the current view
+async function reloadFromSupabase() {
+	if (!currentUser) return;
+	const savedProjectId = currentProjectId;
+	const savedView = currentView;
+	const savedTab = currentProjectTab;
+	try {
+		await loadUserPrefs();
+		await loadFromSupabase();
+		// Restore current view — loadFromSupabase resets currentProjectId to projects[0]
+		if (savedView === "project" && projects.find(p => p.id === savedProjectId)) {
+			currentProjectId = savedProjectId;
+			currentProjectTab = savedTab;
+		}
+		currentView = savedView;
+		renderProjects();
+		renderTodos();
+	} catch (err) {
+		console.error("Failed to reload from Supabase:", err);
+	}
+}
+
+// Re-sync from Supabase whenever the tab becomes visible or the window is focused,
+// but only if enough time has passed since the last pull (avoids thrashing)
+const RESYNC_INTERVAL = 30_000; // 30 seconds
+
+document.addEventListener("visibilitychange", () => {
+	if (document.visibilityState === "visible" && currentUser) {
+		if (Date.now() - lastRemoteSync > RESYNC_INTERVAL) {
+			reloadFromSupabase();
+		}
+	}
+});
+
+window.addEventListener("focus", () => {
+	if (!currentUser) return;
+	if (Date.now() - lastRemoteSync > RESYNC_INTERVAL) {
+		reloadFromSupabase();
+	}
+});
 
 /* ======================
    INIT
