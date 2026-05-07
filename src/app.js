@@ -463,11 +463,36 @@ function buildTodoRow(todo, projectId, index) {
 	};
 }
 
+// ── Sync status indicator ─────────────────────────────────
+let syncDot = null;
+
+function getSyncDot() {
+	if (!syncDot) {
+		syncDot = document.createElement("span");
+		syncDot.id = "sync-dot";
+		syncDot.title = "Sync status";
+		document.querySelector("#header-actions")?.prepend(syncDot);
+	}
+	return syncDot;
+}
+
+function setSyncStatus(status) { // "syncing" | "ok" | "error"
+	const dot = getSyncDot();
+	dot.className = `sync-dot sync-dot--${status}`;
+	dot.title = status === "syncing" ? "Saving…" : status === "error" ? "Sync error — check console" : "Saved";
+}
+
+function isMissingColumnError(err) {
+	return err?.code === "42703" || err?.message?.toLowerCase().includes("does not exist");
+}
+
 // ── Full sync (projects + all todos + inbox) ───────────────
 
 async function syncAllToSupabase() {
 	if (!currentUser) return;
 	const uid = currentUser.id;
+	setSyncStatus("syncing");
+	let hadError = false;
 
 	// 1. Upsert all projects
 	try {
@@ -487,17 +512,18 @@ async function syncAllToSupabase() {
 		}
 	} catch (err) {
 		console.error("Supabase projects sync error:", err);
+		hadError = true;
 	}
 
-	// 2. Upsert all project todos (with graceful column fallback)
+	// 2. Upsert all project todos (with graceful fallback for un-migrated columns)
 	try {
 		const todoRows = projects.flatMap((p) =>
 			p.todos.map((t, i) => buildTodoRow(t, p.id, i))
 		);
 		if (todoRows.length > 0) {
 			let { error } = await supabase.from("todos").upsert(todoRows, { onConflict: "id" });
-			if (error && error.code === "42703") {
-				// Unknown column — retry without new optional columns
+			if (error && isMissingColumnError(error)) {
+				// tags column not yet migrated — retry without it
 				const safeRows = todoRows.map(({ tags, ...rest }) => rest);
 				({ error } = await supabase.from("todos").upsert(safeRows, { onConflict: "id" }));
 			}
@@ -517,6 +543,7 @@ async function syncAllToSupabase() {
 		}
 	} catch (err) {
 		console.error("Supabase todos sync error:", err);
+		hadError = true;
 	}
 
 	// 3. Upsert inbox todos
@@ -524,7 +551,7 @@ async function syncAllToSupabase() {
 		const inboxRows = inbox.map((t, i) => buildTodoRow(t, null, i));
 		if (inboxRows.length > 0) {
 			let { error } = await supabase.from("todos").upsert(inboxRows, { onConflict: "id" });
-			if (error && error.code === "42703") {
+			if (error && isMissingColumnError(error)) {
 				const safeRows = inboxRows.map(({ tags, ...rest }) => rest);
 				({ error } = await supabase.from("todos").upsert(safeRows, { onConflict: "id" }));
 			}
@@ -544,7 +571,10 @@ async function syncAllToSupabase() {
 		}
 	} catch (err) {
 		console.error("Supabase inbox sync error:", err);
+		hadError = true;
 	}
+
+	setSyncStatus(hadError ? "error" : "ok");
 }
 
 // ── Column config sync ─────────────────────────────────────
@@ -670,7 +700,7 @@ async function reloadFromSupabase() {
 
 // Re-sync from Supabase whenever the tab becomes visible or the window is focused,
 // but only if enough time has passed since the last pull (avoids thrashing)
-const RESYNC_INTERVAL = 30_000; // 30 seconds
+const RESYNC_INTERVAL = 15_000; // 15 seconds
 
 document.addEventListener("visibilitychange", () => {
 	if (document.visibilityState === "visible" && currentUser) {
