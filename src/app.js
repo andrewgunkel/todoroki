@@ -676,16 +676,19 @@ async function loadFromSupabase() {
 	lastRemoteSync = Date.now();
 }
 
-// Pull fresh data from Supabase and re-render without disrupting the current view
+// Pull fresh data from Supabase and re-render without disrupting the current view.
+// Skips if a write is still pending (syncTimer is set) to avoid clobbering unsaved changes.
+let reloading = false;
 async function reloadFromSupabase() {
-	if (!currentUser) return;
+	if (!currentUser || reloading || syncTimer) return;
+	reloading = true;
 	const savedProjectId = currentProjectId;
 	const savedView = currentView;
 	const savedTab = currentProjectTab;
 	try {
 		await loadUserPrefs();
 		await loadFromSupabase();
-		// Restore current view — loadFromSupabase resets currentProjectId to projects[0]
+		// Restore view — loadFromSupabase resets currentProjectId to projects[0]
 		if (savedView === "project" && projects.find(p => p.id === savedProjectId)) {
 			currentProjectId = savedProjectId;
 			currentProjectTab = savedTab;
@@ -695,27 +698,24 @@ async function reloadFromSupabase() {
 		renderTodos();
 	} catch (err) {
 		console.error("Failed to reload from Supabase:", err);
+	} finally {
+		reloading = false;
 	}
 }
 
-// Re-sync from Supabase whenever the tab becomes visible or the window is focused,
-// but only if enough time has passed since the last pull (avoids thrashing)
-const RESYNC_INTERVAL = 15_000; // 15 seconds
-
+// Reload when the tab becomes visible or the window gets focus (covers tab switching & alt-tab)
 document.addEventListener("visibilitychange", () => {
-	if (document.visibilityState === "visible" && currentUser) {
-		if (Date.now() - lastRemoteSync > RESYNC_INTERVAL) {
-			reloadFromSupabase();
-		}
-	}
+	if (document.visibilityState === "visible" && currentUser) reloadFromSupabase();
+});
+window.addEventListener("focus", () => {
+	if (currentUser) reloadFromSupabase();
 });
 
-window.addEventListener("focus", () => {
-	if (!currentUser) return;
-	if (Date.now() - lastRemoteSync > RESYNC_INTERVAL) {
-		reloadFromSupabase();
-	}
-});
+// Also poll every 30 seconds while the tab is active — ensures both devices stay in sync
+// even when both are open and visible at the same time
+setInterval(() => {
+	if (document.visibilityState === "visible" && currentUser) reloadFromSupabase();
+}, 30_000);
 
 /* ======================
    INIT
