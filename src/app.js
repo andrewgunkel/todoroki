@@ -1822,6 +1822,7 @@ function todoMatchesSearch(todo, projectCode) {
 		todo.status,
 		todo.priority,
 		projectCode,
+		projectCode && todo.number ? `${projectCode}-${todo.number}` : null,
 		...(todo.tags || []),
 		...(todo.checklist || []).map(c => (typeof c === "string" ? c : c.text) || ""),
 	].some(s => s?.toLowerCase().includes(q));
