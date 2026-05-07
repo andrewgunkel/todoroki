@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS public.user_preferences (
 
 ALTER TABLE public.user_preferences ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "user_preferences: own row only" ON public.user_preferences;
 CREATE POLICY "user_preferences: own row only"
     ON public.user_preferences FOR ALL
     USING  (auth.uid() = user_id)

@@ -483,7 +483,11 @@ function setSyncStatus(status) { // "syncing" | "ok" | "error"
 }
 
 function isMissingColumnError(err) {
-	return err?.code === "42703" || err?.message?.toLowerCase().includes("does not exist");
+	return (
+		err?.code === "42703"     ||   // PostgreSQL: undefined_column
+		err?.code === "PGRST204"  ||   // PostgREST: column not found on table
+		err?.message?.toLowerCase().includes("does not exist")
+	);
 }
 
 // ── Full sync (projects + all todos + inbox) ───────────────
@@ -494,11 +498,16 @@ async function syncAllToSupabase() {
 	setSyncStatus("syncing");
 	let hadError = false;
 
-	// 1. Upsert all projects
+	// 1. Upsert all projects (with fallback for un-migrated columns)
 	try {
 		const projectRows = projects.map((p, i) => buildProjectRow(p, i));
 		if (projectRows.length > 0) {
-			const { error } = await supabase.from("projects").upsert(projectRows, { onConflict: "id" });
+			let { error } = await supabase.from("projects").upsert(projectRows, { onConflict: "id" });
+			if (error && isMissingColumnError(error)) {
+				// Strip columns that require migrations and retry with base columns only
+				const safeRows = projectRows.map(({ code, todo_counter, tabs, notes, tools, ...rest }) => rest);
+				({ error } = await supabase.from("projects").upsert(safeRows, { onConflict: "id" }));
+			}
 			if (error) throw error;
 		}
 		// Remove deleted projects
