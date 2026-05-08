@@ -374,7 +374,7 @@ body {
 /* ── Body text ── */
 .todo-description,
 .todo-notes {
-    font-size: 0.875rem;
+    font-size: 0.8rem;
     line-height: 1.55;
     cursor: pointer;
     border-radius: 4px;
@@ -487,7 +487,7 @@ body {
 }
 
 .todo-checklist li span {
-    font-size: 0.875rem;
+    font-size: 0.8rem;
     flex: 1;
     cursor: pointer;
     line-height: 1.4;
@@ -505,7 +505,7 @@ body {
     border-bottom: 1px solid transparent;
     background: transparent;
     color: #9e9e9e;
-    font-size: 0.875rem;
+    font-size: 0.8rem;
     padding: 3px 0 3px 23px;
     width: 100%;
     transition: border-color 0.15s, color 0.15s;
@@ -1698,13 +1698,13 @@ body {
 
 .sort-search-input {
     margin-left: auto;
-    font-size: 0.75rem;
+    font-size: 0.8rem;
     font-family: inherit;
-    padding: 4px 10px;
-    border-radius: 999px;
+    padding: 5px 10px;
+    border-radius: 8px;
     border: 1px solid var(--md-field-border);
     background: var(--md-card-surface);
-    color: var(--md-text-primary);
+    color: inherit;
     outline: none;
     width: 160px;
     transition: border-color 0.15s, width 0.2s;
@@ -1719,7 +1719,7 @@ body {
 
 [data-theme="dark"] .sort-search-input {
     background: #1c1b2e;
-    border-color: #3d3b52;
+    border-color: #2d2b3d;
     color: #e0deff;
 }
 
@@ -1733,7 +1733,48 @@ body {
 
 .overview-notes-search-input {
     width: 220px;
-    border-radius: 999px;
+    border-radius: 8px;
+}
+
+/* ── Filter bars container (wraps epic/stack/tag filter bars) ── */
+.filter-bars-container {
+    display: flex;
+    flex-direction: column;
+}
+
+/* ── Mobile filter toggle (hidden on desktop) ── */
+.filter-toggle-btn {
+    display: none;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.75rem;
+    font-family: inherit;
+    padding: 3px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--md-field-border);
+    background: transparent;
+    color: var(--md-text-secondary);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.filter-toggle-btn.active,
+.filter-toggle-btn:hover {
+    border-color: var(--palette-dark);
+    color: var(--palette-dark);
+    background: rgba(4, 67, 137, 0.06);
+}
+
+[data-theme="dark"] .filter-toggle-btn {
+    border-color: #3d3b52;
+    color: #b0adc8;
+}
+
+[data-theme="dark"] .filter-toggle-btn.active,
+[data-theme="dark"] .filter-toggle-btn:hover {
+    border-color: #6c63ff;
+    color: #c4baff;
+    background: rgba(108, 99, 255, 0.1);
 }
 
 /* ======================
@@ -1964,6 +2005,29 @@ body {
         flex-wrap: wrap;
         padding: 8px 12px 4px;
         gap: 4px;
+    }
+
+    .sort-search-input {
+        width: 100%;
+        margin-left: 0;
+        margin-top: 4px;
+        flex: 1 1 100%;
+    }
+
+    .sort-search-input:focus {
+        width: 100%;
+    }
+
+    .filter-toggle-btn {
+        display: inline-flex;
+    }
+
+    .filter-bars-container {
+        display: none;
+    }
+
+    .filter-bars-container.filter-bars-open {
+        display: flex;
     }
 
     /* Kanban: full-width stacked columns */
@@ -3730,6 +3794,18 @@ textarea.modal-form-input {
 .note-card-content em { font-style: italic; }
 .note-card-content a { color: var(--palette-dark); text-decoration: underline; }
 
+.note-card-content ul,
+.note-card-content ol {
+    padding-left: 1.5em;
+    list-style-position: outside;
+}
+
+.note-card-body ul,
+.note-card-body ol {
+    padding-left: 1.5em;
+    list-style-position: outside;
+}
+
 .note-card-toolbar {
     display: none;
     align-items: center;
@@ -4281,6 +4357,8 @@ textarea.modal-form-input {
     border-radius: 4px;
     padding: 1px 6px;
     display: inline-block;
+    align-self: flex-start;
+    width: fit-content;
     margin-bottom: 4px;
 }
 
@@ -4317,7 +4395,7 @@ textarea.modal-form-input {
 .todo-tag-chip {
     display: inline-flex;
     align-items: center;
-    font-size: 0.7rem;
+    font-size: 0.8rem;
     color: var(--palette-dark);
     background: rgba(4,67,137,0.08);
     border: 1px solid rgba(4,67,137,0.2);
@@ -4330,7 +4408,7 @@ textarea.modal-form-input {
 .todo-tag-chip:hover { background: rgba(239,68,68,0.1); border-color: #ef4444; color: #ef4444; }
 
 .todo-tag-input {
-    font-size: 0.7rem;
+    font-size: 0.8rem;
     border: none;
     outline: none;
     background: transparent;

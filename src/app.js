@@ -3996,35 +3996,58 @@ function renderTodos() {
 	sortBarContainer.innerHTML = "";
 	sortBarContainer.appendChild(buildSortBar(project.todos, renderTodos));
 
+	const filterBarsContainer = document.createElement("div");
+	filterBarsContainer.classList.add("filter-bars-container");
+
 	if (project.epics.length > 0) {
 		const filterBar = buildEpicFilterBar(project);
-		if (filterBar) sortBarContainer.appendChild(filterBar);
+		if (filterBar) filterBarsContainer.appendChild(filterBar);
 	}
 
 	// Stack tool filter (shown when project has a Stack tab)
 	if (project.tabs?.some(t => t.type === "stack") && project.tools?.length) {
 		const stackFilterBar = buildStackFilterBar(project);
-		if (stackFilterBar) sortBarContainer.appendChild(stackFilterBar);
+		if (stackFilterBar) filterBarsContainer.appendChild(stackFilterBar);
 	}
 
 	// Tag filter bar
 	const allTodoTags = [...new Set(project.todos.flatMap(t => t.tags || []).filter(Boolean))];
 	if (allTodoTags.length > 0) {
-		sortBarContainer.appendChild(buildTodoTagFilterBar(allTodoTags));
+		filterBarsContainer.appendChild(buildTodoTagFilterBar(allTodoTags));
+	}
+
+	if (filterBarsContainer.children.length > 0) {
+		sortBarContainer.appendChild(filterBarsContainer);
+		const filterToggle = document.createElement("button");
+		filterToggle.classList.add("filter-toggle-btn");
+		filterToggle.textContent = "Filters";
+		filterToggle.addEventListener("click", () => {
+			const open = filterBarsContainer.classList.toggle("filter-bars-open");
+			filterToggle.classList.toggle("active", open);
+			filterToggle.textContent = open ? "Filters ✕" : "Filters";
+		});
+		const sortBarEl = sortBarContainer.querySelector(".sort-bar");
+		const searchInput = sortBarEl.querySelector(".sort-search-input");
+		if (searchInput) sortBarEl.insertBefore(filterToggle, searchInput);
+		else sortBarEl.appendChild(filterToggle);
 	}
 
 	if (project.epics.length === 0) {
 		const epicBtn = document.createElement("button");
 		epicBtn.classList.add("sort-btn", "add-epic-sort-btn");
 		epicBtn.textContent = "+ Add Epic";
-		epicBtn.style.marginLeft = "auto";
 		epicBtn.addEventListener("click", () => {
 			const newEpic = { id: self.crypto.randomUUID(), title: "New Epic", collapsed: false, extraColumns: [] };
 			project.epics.push(newEpic);
 			saveProjects();
 			renderTodos();
 		});
-		sortBarContainer.querySelector(".sort-bar").appendChild(epicBtn);
+		const sortBarEl = sortBarContainer.querySelector(".sort-bar");
+		if (sortBarEl) {
+			const searchInput = sortBarEl.querySelector(".sort-search-input");
+			if (searchInput) sortBarEl.insertBefore(epicBtn, searchInput);
+			else sortBarEl.appendChild(epicBtn);
+		}
 	}
 
 	if (project.epics.length > 0) {
