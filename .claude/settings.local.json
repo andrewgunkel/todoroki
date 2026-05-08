@@ -8,7 +8,8 @@
       "WebFetch(domain:github.com)",
       "Bash(open /Users/andrewgunkel/repos/odin-todo/dist/index.html)",
       "Bash(npm install *)",
-      "Bash(npx webpack *)"
+      "Bash(npx webpack *)",
+      "Bash(git -C /Users/andrewgunkel/repos/todoroki ls-files --error-unmatch .env)"
     ]
   }
 }
