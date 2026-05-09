@@ -3969,7 +3969,6 @@ function renderOverview() {
 		{ id: "inprogress", label: "In Progress" },
 		{ id: "completed",  label: "Completed" },
 		{ id: "notes",      label: "Notes" },
-		{ id: "assistant",  label: "✦ Assistant" },
 	].forEach(({ id, label }) => {
 		const btn = document.createElement("button");
 		btn.classList.add("project-tab");
@@ -5673,7 +5672,7 @@ function renderProjects() {
 	// Overview item
 	const overviewItem = document.createElement("div");
 	overviewItem.classList.add("overview-sidebar-item");
-	if (currentView === "overview") overviewItem.classList.add("active");
+	if (currentView === "overview" && overviewTab !== "assistant") overviewItem.classList.add("active");
 
 	const overviewIcon = document.createElement("span");
 	overviewIcon.classList.add("overview-sidebar-icon");
@@ -5688,6 +5687,7 @@ function renderProjects() {
 	overviewItem.addEventListener("click", () => {
 		currentView = "overview";
 		currentProjectTab = "board";
+		if (overviewTab === "assistant") overviewTab = "dashboard";
 		selectedTodos.clear();
 		sidebar.classList.remove("open");
 		sidebarBackdrop.classList.remove("visible");
@@ -5696,6 +5696,23 @@ function renderProjects() {
 	});
 
 	scrollEl.appendChild(overviewItem);
+
+	// Assistant sub-item (under Overview)
+	const assistantSidebarItem = document.createElement("div");
+	assistantSidebarItem.classList.add("assistant-sidebar-item");
+	if (currentView === "overview" && overviewTab === "assistant") assistantSidebarItem.classList.add("active");
+	assistantSidebarItem.textContent = "✦ Assistant";
+	assistantSidebarItem.addEventListener("click", () => {
+		currentView = "overview";
+		overviewTab = "assistant";
+		currentProjectTab = "board";
+		selectedTodos.clear();
+		sidebar.classList.remove("open");
+		sidebarBackdrop.classList.remove("visible");
+		renderProjects();
+		renderOverview();
+	});
+	scrollEl.appendChild(assistantSidebarItem);
 
 	// Inbox item
 	const inboxItem = document.createElement("div");

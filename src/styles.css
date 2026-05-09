@@ -2508,6 +2508,25 @@ body {
 
 .overview-sidebar-icon { font-size: 0.85rem; flex-shrink: 0; }
 
+.assistant-sidebar-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px 7px 32px;
+    margin: 2px 8px 0;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: rgba(255,255,255,0.7);
+    transition: background 0.15s;
+}
+.assistant-sidebar-item:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.9); }
+.assistant-sidebar-item.active {
+    background: var(--palette-dark);
+    color: #ffffff;
+}
+
 .inbox-sidebar-item {
     display: flex;
     align-items: center;
@@ -5164,9 +5183,6 @@ textarea.modal-form-input {
     transition: opacity 0.15s, color 0.15s;
     user-select: none;
     line-height: 1;
-    width: 1.25em;
-    overflow: hidden;
-    white-space: nowrap;
 }
 .project-sidebar-icon:hover { opacity: 1; }
 
@@ -5457,7 +5473,7 @@ textarea.modal-form-input {
     display: flex;
     flex-direction: column;
     gap: 10px;
-    margin-bottom: 4px;
+    margin-bottom: 28px;
 }
 
 .overview-ai-no-key {
