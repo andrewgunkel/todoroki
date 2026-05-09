@@ -621,6 +621,39 @@ async function saveUserPrefs() {
 
 // ── Helpers ────────────────────────────────────────────────
 
+function inlineMarkdown(text) {
+	return text
+		.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+		.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+		.replace(/\*(.+?)\*/g, "<em>$1</em>")
+		.replace(/`(.+?)`/g, "<code>$1</code>");
+}
+
+function parseMarkdown(text) {
+	const lines = text.split("\n");
+	let html = "";
+	let inList = false;
+	for (const raw of lines) {
+		const line = raw.trimEnd();
+		if (/^[-*] /.test(line)) {
+			if (!inList) { html += "<ul>"; inList = true; }
+			html += `<li>${inlineMarkdown(line.slice(2).trimStart())}</li>`;
+		} else {
+			if (inList) { html += "</ul>"; inList = false; }
+			if (!line.trim()) {
+				/* blank line — paragraph break, skip */
+			} else if (/^#{1,3} /.test(line)) {
+				const level = line.match(/^(#+)/)[1].length;
+				html += `<h${level}>${inlineMarkdown(line.replace(/^#+\s*/, ""))}</h${level}>`;
+			} else {
+				html += `<p>${inlineMarkdown(line)}</p>`;
+			}
+		}
+	}
+	if (inList) html += "</ul>";
+	return html;
+}
+
 function renumberProjectTodos(project) {
 	const sorted = [...project.todos].sort((a, b) => (a.number || 0) - (b.number || 0));
 	sorted.forEach((t, i) => { t.number = i + 1; });
@@ -4121,9 +4154,9 @@ function renderOverview() {
 				dismissBtn.innerHTML = "×";
 				dismissBtn.addEventListener("click", () => { resultCard.style.display = "none"; });
 				summaryHeader.append(summaryIcon, summaryTitle, dismissBtn);
-				const summaryText = document.createElement("p");
+				const summaryText = document.createElement("div");
 				summaryText.classList.add("overview-ai-summary-text");
-				summaryText.textContent = summary;
+				summaryText.innerHTML = parseMarkdown(summary);
 				resultCard.append(summaryHeader, summaryText);
 			} catch (err) {
 				resultCard.style.display = "";

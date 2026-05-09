@@ -5547,6 +5547,35 @@ textarea.modal-form-input {
     font-size: 0.88rem;
     line-height: 1.6;
     color: var(--md-text-color);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.overview-ai-summary-text p { margin: 0; }
+.overview-ai-summary-text strong { font-weight: 700; color: var(--md-text-color); }
+.overview-ai-summary-text em { font-style: italic; }
+.overview-ai-summary-text code {
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 0.82em;
+    background: var(--md-chip-bg);
+    border-radius: 4px;
+    padding: 1px 5px;
+}
+.overview-ai-summary-text ul {
+    margin: 0;
+    padding-left: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+.overview-ai-summary-text li { margin: 0; }
+.overview-ai-summary-text h1,
+.overview-ai-summary-text h2,
+.overview-ai-summary-text h3 {
+    font-size: 0.9rem;
+    font-weight: 700;
+    margin: 0;
+    color: var(--md-text-color);
 }
 
 .overview-ai-error {
