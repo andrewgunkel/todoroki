@@ -1140,6 +1140,15 @@ function buildTodoCard(todo, ctx) {
 
 	moveBtn.addEventListener("click", (e) => {
 		e.stopPropagation();
+		if (todoCard.querySelector(".move-project-row")) return;
+
+		const selectRow = document.createElement("div");
+		selectRow.classList.add("move-project-row");
+
+		const label = document.createElement("span");
+		label.classList.add("move-project-label");
+		label.textContent = "Move to:";
+
 		const select = document.createElement("select");
 		select.classList.add("move-project-select");
 		projects.forEach(p => {
@@ -1149,8 +1158,13 @@ function buildTodoCard(todo, ctx) {
 			if (!ctx.isInbox && p.id === currentProjectId) opt.selected = true;
 			select.appendChild(opt);
 		});
-		moveBtn.replaceWith(select);
+
+		selectRow.appendChild(label);
+		selectRow.appendChild(select);
+		todoHeader.insertAdjacentElement("afterend", selectRow);
 		select.focus();
+
+		function cleanup() { selectRow.remove(); }
 
 		function commitMove() {
 			const targetProjectId = select.value;
@@ -1160,6 +1174,7 @@ function buildTodoCard(todo, ctx) {
 				todo.status = validStatuses.find(l => l.toLowerCase().includes("progress")) || validStatuses[0];
 			}
 			todo.epicId = null; // reset epic when moving projects
+			cleanup();
 			if (ctx.isInbox) {
 				const idx = inbox.indexOf(todo);
 				if (idx !== -1) inbox.splice(idx, 1);
@@ -1177,14 +1192,12 @@ function buildTodoCard(todo, ctx) {
 					targetProject.addTodo(todo);
 					saveProjects();
 					renderTodos();
-				} else {
-					select.replaceWith(moveBtn);
 				}
 			}
 		}
 
 		select.addEventListener("change", commitMove);
-		select.addEventListener("blur", () => select.replaceWith(moveBtn));
+		select.addEventListener("blur", cleanup);
 	});
 
 	// SELECTION — single click on card body
@@ -3786,16 +3799,34 @@ function buildOverviewNoteCard(note, project, rebuildGrid, rebuildFilter) {
 	delBtn.classList.add("note-delete-btn");
 	delBtn.textContent = "×";
 	delBtn.title = "Delete note";
-	delBtn.addEventListener("click", () => {
+	delBtn.addEventListener("click", (e) => {
+		e.stopPropagation();
+		const savedNote = { ...note, tags: [...(note.tags || []) ] };
+		const savedProject = project;
+
 		if (project) {
-			project.notes = (project.notes || []).filter(n => n.id !== note.id);
+			const idx = (project.notes || []).findIndex(n => n.id === note.id);
+			if (idx !== -1) project.notes.splice(idx, 1);
 			saveProjects();
 		} else {
-			userPrefs.generalNotes = userPrefs.generalNotes.filter(n => n.id !== note.id);
+			const idx = userPrefs.generalNotes.findIndex(n => n.id === note.id);
+			if (idx !== -1) userPrefs.generalNotes.splice(idx, 1);
 			saveUserPrefs();
 		}
-		rebuildGrid();
-		rebuildFilter();
+
+		renderOverviewNotes();
+
+		showUndoToast("Note deleted", () => {
+			if (savedProject) {
+				if (!savedProject.notes) savedProject.notes = [];
+				savedProject.notes.push(savedNote);
+				saveProjects();
+			} else {
+				userPrefs.generalNotes.push(savedNote);
+				saveUserPrefs();
+			}
+			renderOverviewNotes();
+		});
 	});
 
 	meta.append(catInput, delBtn);

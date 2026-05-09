@@ -342,6 +342,19 @@ body {
     color: var(--palette-dark);
 }
 
+.move-project-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.move-project-label {
+    font-size: 0.72rem;
+    color: var(--md-label-color);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
 .move-project-select {
     font-size: 0.75rem;
     font-family: inherit;
@@ -351,8 +364,8 @@ body {
     color: var(--md-input-color);
     padding: 2px 4px;
     cursor: pointer;
-    flex-shrink: 0;
-    max-width: 120px;
+    flex: 1;
+    min-width: 0;
 }
 
 .move-project-select:focus {
