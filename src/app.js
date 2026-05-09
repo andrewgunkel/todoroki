@@ -359,7 +359,7 @@ function openIconPicker(project, anchorEl, onPick) {
 	customInput.value = project.icon || "";
 
 	const customPreview = document.createElement("span");
-	customPreview.classList.add("material-icons-round", "icon-picker-custom-preview");
+	customPreview.classList.add("material-symbols-rounded", "icon-picker-custom-preview");
 	customPreview.textContent = project.icon || "help_outline";
 
 	function toIconName(raw) {
@@ -410,7 +410,7 @@ function openIconPicker(project, anchorEl, onPick) {
 			if (project.icon === name) btn.classList.add("active");
 			btn.title = name.replace(/_/g, " ");
 			const icon = document.createElement("span");
-			icon.classList.add("material-icons-round");
+			icon.classList.add("material-symbols-rounded");
 			icon.textContent = name;
 			btn.appendChild(icon);
 			btn.addEventListener("click", () => pickIcon(name));
@@ -4069,7 +4069,7 @@ function renderOverview() {
 		const noKeyMsg = document.createElement("div");
 		noKeyMsg.classList.add("overview-ai-no-key");
 		const noKeyIcon = document.createElement("span");
-		noKeyIcon.classList.add("material-icons-round");
+		noKeyIcon.classList.add("material-symbols-rounded");
 		noKeyIcon.textContent = "auto_awesome";
 		const noKeyText = document.createElement("span");
 		noKeyText.textContent = "Add your Anthropic API key in Settings to use AI features";
@@ -4086,7 +4086,7 @@ function renderOverview() {
 		const summariseBtn = document.createElement("button");
 		summariseBtn.classList.add("overview-ai-btn");
 		const btnIcon = document.createElement("span");
-		btnIcon.classList.add("material-icons-round");
+		btnIcon.classList.add("material-symbols-rounded");
 		btnIcon.textContent = "auto_awesome";
 		const btnLabel = document.createElement("span");
 		btnLabel.textContent = "Summarise my todos";
@@ -4147,7 +4147,7 @@ function renderOverview() {
 				const summaryHeader = document.createElement("div");
 				summaryHeader.classList.add("overview-ai-result-header");
 				const summaryIcon = document.createElement("span");
-				summaryIcon.classList.add("material-icons-round");
+				summaryIcon.classList.add("material-symbols-rounded");
 				summaryIcon.textContent = "auto_awesome";
 				const summaryTitle = document.createElement("span");
 				summaryTitle.textContent = "AI Summary";
@@ -4438,7 +4438,7 @@ Keep responses concise. Use markdown for formatting. Never invent todo IDs — o
 		const noKey = document.createElement("div");
 		noKey.classList.add("assistant-no-key");
 		const icon = document.createElement("span");
-		icon.classList.add("material-icons-round");
+		icon.classList.add("material-symbols-rounded");
 		icon.textContent = "auto_awesome";
 		const msg = document.createElement("p");
 		msg.textContent = "Add your Anthropic API key in Settings to use the Personal Assistant.";
@@ -4482,7 +4482,7 @@ Keep responses concise. Use markdown for formatting. Never invent todo IDs — o
 		const welcome = document.createElement("div");
 		welcome.classList.add("assistant-welcome");
 		const welcomeIcon = document.createElement("span");
-		welcomeIcon.classList.add("material-icons-round");
+		welcomeIcon.classList.add("material-symbols-rounded");
 		welcomeIcon.textContent = "auto_awesome";
 		const welcomeText = document.createElement("p");
 		welcomeText.textContent = "Hi! I can see all your projects and todos. Ask me anything, or use a quick action above.";
@@ -4518,7 +4518,7 @@ Keep responses concise. Use markdown for formatting. Never invent todo IDs — o
 
 	const sendBtn = document.createElement("button");
 	sendBtn.classList.add("assistant-send-btn");
-	sendBtn.innerHTML = `<span class="material-icons-round">send</span>`;
+	sendBtn.innerHTML = `<span class="material-symbols-rounded">send</span>`;
 	sendBtn.addEventListener("click", () => { if (textarea.value.trim()) sendMessage(textarea.value.trim()); });
 
 	inputRow.append(textarea, sendBtn);
@@ -5486,7 +5486,7 @@ function renderTodos() {
 	let titleIcon = titleWrap.querySelector(".project-title-icon");
 	if (!titleIcon) {
 		titleIcon = document.createElement("span");
-		titleIcon.classList.add("material-icons-round", "project-title-icon");
+		titleIcon.classList.add("material-symbols-rounded", "project-title-icon");
 		titleWrap.insertBefore(titleIcon, projectTitle);
 	}
 	titleIcon.textContent = project.icon || "folder";
@@ -5886,9 +5886,11 @@ function renderProjects() {
 			openColorPicker(project, item, () => { renderProjects(); renderTodos(); });
 		});
 
-		// Project icon in sidebar
+		// Project icon in sidebar (wrapper clips overflow if name has no ligature)
+		const iconWrap = document.createElement("span");
+		iconWrap.classList.add("project-sidebar-icon-wrap");
 		const iconEl = document.createElement("span");
-		iconEl.classList.add("material-icons-round", "project-sidebar-icon");
+		iconEl.classList.add("material-symbols-rounded", "project-sidebar-icon");
 		iconEl.textContent = project.icon || "folder";
 		iconEl.title = "Click to change icon · Right-click to change colour";
 		iconEl.addEventListener("click", (e) => {
@@ -5905,7 +5907,8 @@ function renderProjects() {
 				}
 			});
 		});
-		item.appendChild(iconEl);
+		iconWrap.appendChild(iconEl);
+		item.appendChild(iconWrap);
 
 		// Code badge in sidebar
 		if (project.code) {
