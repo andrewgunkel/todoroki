@@ -337,13 +337,65 @@ function openIconPicker(project, anchorEl, onPick) {
 
 	const rect = anchorEl.getBoundingClientRect();
 	popup.style.position = "fixed";
-	popup.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - 320)}px`;
-	popup.style.left = `${Math.min(rect.left, window.innerWidth - 260)}px`;
+	popup.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - 460)}px`;
+	popup.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 270))}px`;
 
-	const search = document.createElement("input");
-	search.classList.add("icon-picker-search");
-	search.placeholder = "Search icons…";
-	popup.appendChild(search);
+	function pickIcon(name) {
+		project.icon = name;
+		saveProjects();
+		popup.remove();
+		document.removeEventListener("click", onOutside, true);
+		onPick();
+	}
+
+	// ── Custom icon name / URL input ──────────────────────────
+	const customRow = document.createElement("div");
+	customRow.classList.add("icon-picker-custom-row");
+
+	const customInput = document.createElement("input");
+	customInput.classList.add("icon-picker-search");
+	customInput.placeholder = "Type icon name (e.g. rocket_launch)";
+	customInput.value = project.icon || "";
+
+	const customPreview = document.createElement("span");
+	customPreview.classList.add("material-icons-round", "icon-picker-custom-preview");
+	customPreview.textContent = project.icon || "help_outline";
+
+	customInput.addEventListener("input", () => {
+		const name = customInput.value.trim()
+			.replace(/https?:\/\/.*\/([^/]+)$/, "$1") // strip URL, keep icon name
+			.replace(/[^a-z0-9_]/gi, "_").toLowerCase();
+		customPreview.textContent = name || "help_outline";
+	});
+	customInput.addEventListener("keydown", (e) => {
+		if (e.key === "Enter") {
+			const name = customInput.value.trim()
+				.replace(/https?:\/\/.*\/([^/]+)$/, "$1")
+				.replace(/[^a-z0-9_]/gi, "_").toLowerCase();
+			if (name) pickIcon(name);
+		}
+	});
+
+	const customApply = document.createElement("button");
+	customApply.classList.add("icon-picker-apply-btn");
+	customApply.textContent = "Use";
+	customApply.addEventListener("click", () => {
+		const name = customInput.value.trim()
+			.replace(/https?:\/\/.*\/([^/]+)$/, "$1")
+			.replace(/[^a-z0-9_]/gi, "_").toLowerCase();
+		if (name) pickIcon(name);
+	});
+
+	customRow.appendChild(customPreview);
+	customRow.appendChild(customInput);
+	customRow.appendChild(customApply);
+	popup.appendChild(customRow);
+
+	// ── Search + grid ─────────────────────────────────────────
+	const searchInput = document.createElement("input");
+	searchInput.classList.add("icon-picker-search");
+	searchInput.placeholder = "Search icons…";
+	popup.appendChild(searchInput);
 
 	const grid = document.createElement("div");
 	grid.classList.add("icon-picker-grid");
@@ -360,21 +412,57 @@ function openIconPicker(project, anchorEl, onPick) {
 			icon.classList.add("material-icons-round");
 			icon.textContent = name;
 			btn.appendChild(icon);
-			btn.addEventListener("click", () => {
-				project.icon = name;
-				saveProjects();
-				popup.remove();
-				document.removeEventListener("click", onOutside, true);
-				onPick();
-			});
+			btn.addEventListener("click", () => pickIcon(name));
 			grid.appendChild(btn);
 		});
 	}
 	renderGrid("");
-	search.addEventListener("input", () => renderGrid(search.value));
+	searchInput.addEventListener("input", () => renderGrid(searchInput.value));
 	popup.appendChild(grid);
+
+	// ── Colour picker section ─────────────────────────────────
+	const colorSection = document.createElement("div");
+	colorSection.classList.add("icon-picker-color-section");
+
+	const colorLabel = document.createElement("div");
+	colorLabel.classList.add("icon-picker-color-label");
+	colorLabel.textContent = "Icon & tab colour";
+	colorSection.appendChild(colorLabel);
+
+	const colorGrid = document.createElement("div");
+	colorGrid.classList.add("color-picker-grid");
+	PROJECT_COLORS.forEach(hex => {
+		const swatch = document.createElement("button");
+		swatch.classList.add("color-picker-swatch");
+		swatch.style.background = hex;
+		if (project.color === hex) swatch.classList.add("active");
+		swatch.addEventListener("click", () => {
+			project.color = hex;
+			saveProjects();
+			// update active swatch highlight
+			colorGrid.querySelectorAll(".color-picker-swatch").forEach(s => s.classList.remove("active"));
+			swatch.classList.add("active");
+			onPick(); // live-update sidebar
+		});
+		colorGrid.appendChild(swatch);
+	});
+	colorSection.appendChild(colorGrid);
+
+	const noneBtn = document.createElement("button");
+	noneBtn.classList.add("color-picker-none");
+	noneBtn.textContent = "No colour";
+	noneBtn.addEventListener("click", () => {
+		project.color = null;
+		saveProjects();
+		colorGrid.querySelectorAll(".color-picker-swatch").forEach(s => s.classList.remove("active"));
+		onPick();
+	});
+	colorSection.appendChild(noneBtn);
+	popup.appendChild(colorSection);
+
 	document.body.appendChild(popup);
-	search.focus();
+	customInput.focus();
+	customInput.select();
 
 	function onOutside(e) {
 		if (!popup.contains(e.target) && e.target !== anchorEl) {
@@ -569,6 +657,7 @@ function buildProjectRow(project, index) {
 		notes:            project.notes || [],
 		tools:            project.tools || [],
 		color:            project.color || null,
+		icon:             project.icon  || null,
 	};
 }
 
@@ -592,6 +681,9 @@ function buildTodoRow(todo, projectId, index) {
 		number:         todo.number || 0,
 		tool_ids:       todo.toolIds || [],
 		tags:           todo.tags || [],
+		comments:       todo.comments    || [],
+		completed_at:   todo.completedAt || null,
+		schedule:       todo.schedule    || null,
 	};
 }
 
@@ -637,7 +729,7 @@ async function syncAllToSupabase() {
 			let { error } = await supabase.from("projects").upsert(projectRows, { onConflict: "id" });
 			if (error && isMissingColumnError(error)) {
 				// Strip columns that require migrations and retry with base columns only
-				const safeRows = projectRows.map(({ code, todo_counter, tabs, notes, tools, ...rest }) => rest);
+				const safeRows = projectRows.map(({ code, todo_counter, tabs, notes, tools, color, icon, ...rest }) => rest);
 				({ error } = await supabase.from("projects").upsert(safeRows, { onConflict: "id" }));
 			}
 			if (error) throw error;
@@ -665,7 +757,7 @@ async function syncAllToSupabase() {
 			let { error } = await supabase.from("todos").upsert(todoRows, { onConflict: "id" });
 			if (error && isMissingColumnError(error)) {
 				// tags column not yet migrated — retry without it
-				const safeRows = todoRows.map(({ tags, ...rest }) => rest);
+				const safeRows = todoRows.map(({ tags, comments, completed_at, schedule, ...rest }) => rest);
 				({ error } = await supabase.from("todos").upsert(safeRows, { onConflict: "id" }));
 			}
 			if (error) throw error;
@@ -782,6 +874,7 @@ async function loadFromSupabase() {
 			notes:          row.notes || [],
 			tools:          row.tools || [],
 			color:          row.color || null,
+			icon:           row.icon  || null,
 			todos:          [],
 		});
 		project.epics.forEach(e => { if (!e.extraColumns) e.extraColumns = []; });
@@ -803,8 +896,11 @@ async function loadFromSupabase() {
 			number:        row.number || 0,
 			toolIds:       Array.isArray(row.tool_ids) ? row.tool_ids : [],
 			tags:          Array.isArray(row.tags) ? row.tags : [],
-			createdAt: row.created_at,
-			updatedAt: row.updated_at,
+			createdAt:     row.created_at,
+			updatedAt:     row.updated_at,
+			comments:      Array.isArray(row.comments) ? row.comments : [],
+			completedAt:   row.completed_at || null,
+			schedule:      row.schedule     || null,
 		};
 		if (row.project_id) {
 			const project = projects.find(p => p.id === row.project_id);
@@ -4110,7 +4206,7 @@ function renderOverviewCompleted() {
 		});
 
 		const grid = document.createElement("div");
-		grid.classList.add("notes-grid");
+		grid.classList.add("ov-completed-grid");
 
 		let lastDay = null;
 		sorted.forEach(({ todo, project }) => {
@@ -4121,8 +4217,8 @@ function renderOverviewCompleted() {
 				lastDay = day;
 				const separator = document.createElement("div");
 				separator.classList.add("ov-completed-date-separator");
-				separator.textContent = day;
 				grid.appendChild(separator);
+				separator.textContent = day;
 			}
 
 			const ctx = {
