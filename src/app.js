@@ -312,6 +312,129 @@ function showUndoToast(titleText, onUndo) {
 	undoTimer = setTimeout(dismiss, 10000);
 }
 
+const MATERIAL_ICONS = [
+	"home","star","favorite","check_circle","work","school","person","group","settings","build",
+	"code","bug_report","science","rocket_launch","bolt","auto_awesome","lightbulb","local_fire_department",
+	"emoji_events","flag","campaign","thumb_up","bookmarks","article","inventory_2","shopping_cart",
+	"attach_money","bar_chart","pie_chart","map","travel_explore","flight","directions_car","computer",
+	"phone_iphone","headphones","camera_alt","palette","brush","music_note","sports_esports","fitness_center",
+	"restaurant","coffee","local_florist","pets","nature","wb_sunny","cloud","lock",
+];
+
+function openIconPicker(project, anchorEl, onPick) {
+	const existing = document.querySelector(".icon-picker-popup");
+	if (existing) { existing.remove(); return; }
+
+	const popup = document.createElement("div");
+	popup.classList.add("icon-picker-popup");
+
+	const rect = anchorEl.getBoundingClientRect();
+	popup.style.position = "fixed";
+	popup.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - 320)}px`;
+	popup.style.left = `${Math.min(rect.left, window.innerWidth - 260)}px`;
+
+	const search = document.createElement("input");
+	search.classList.add("icon-picker-search");
+	search.placeholder = "Search icons…";
+	popup.appendChild(search);
+
+	const grid = document.createElement("div");
+	grid.classList.add("icon-picker-grid");
+
+	function renderGrid(filter) {
+		grid.innerHTML = "";
+		const icons = filter ? MATERIAL_ICONS.filter(n => n.includes(filter.toLowerCase())) : MATERIAL_ICONS;
+		icons.forEach(name => {
+			const btn = document.createElement("button");
+			btn.classList.add("icon-picker-btn");
+			if (project.icon === name) btn.classList.add("active");
+			btn.title = name.replace(/_/g, " ");
+			const icon = document.createElement("span");
+			icon.classList.add("material-icons-round");
+			icon.textContent = name;
+			btn.appendChild(icon);
+			btn.addEventListener("click", () => {
+				project.icon = name;
+				saveProjects();
+				popup.remove();
+				document.removeEventListener("click", onOutside, true);
+				onPick();
+			});
+			grid.appendChild(btn);
+		});
+	}
+	renderGrid("");
+	search.addEventListener("input", () => renderGrid(search.value));
+	popup.appendChild(grid);
+	document.body.appendChild(popup);
+	search.focus();
+
+	function onOutside(e) {
+		if (!popup.contains(e.target) && e.target !== anchorEl) {
+			popup.remove();
+			document.removeEventListener("click", onOutside, true);
+		}
+	}
+	setTimeout(() => document.addEventListener("click", onOutside, true), 0);
+}
+
+const PROJECT_COLORS = [
+    "#6366f1","#8b5cf6","#ec4899","#ef4444",
+    "#f97316","#f59e0b","#22c55e","#14b8a6",
+    "#3b82f6","#0ea5e9","#64748b","#d946ef",
+];
+
+function openColorPicker(project, anchorEl, onPick) {
+    const existing = document.querySelector(".color-picker-popup");
+    if (existing) { existing.remove(); return; }
+    const popup = document.createElement("div");
+    popup.classList.add("color-picker-popup");
+    const rect = anchorEl.getBoundingClientRect();
+    popup.style.position = "fixed";
+    popup.style.top  = `${Math.min(rect.bottom + 4, window.innerHeight - 180)}px`;
+    popup.style.left = `${Math.min(rect.left, window.innerWidth - 200)}px`;
+
+    const grid = document.createElement("div");
+    grid.classList.add("color-picker-grid");
+    PROJECT_COLORS.forEach(hex => {
+        const btn = document.createElement("button");
+        btn.classList.add("color-picker-swatch");
+        btn.style.background = hex;
+        if (project.color === hex) btn.classList.add("active");
+        btn.addEventListener("click", () => {
+            project.color = hex;
+            saveProjects();
+            popup.remove();
+            document.removeEventListener("click", onOutside, true);
+            onPick();
+        });
+        grid.appendChild(btn);
+    });
+    popup.appendChild(grid);
+
+    // None option
+    const noneBtn = document.createElement("button");
+    noneBtn.classList.add("color-picker-none");
+    noneBtn.textContent = "No color";
+    noneBtn.addEventListener("click", () => {
+        project.color = null;
+        saveProjects();
+        popup.remove();
+        document.removeEventListener("click", onOutside, true);
+        onPick();
+    });
+    popup.appendChild(noneBtn);
+
+    document.body.appendChild(popup);
+    function onOutside(e) {
+        if (!popup.contains(e.target) && e.target !== anchorEl) {
+            popup.remove();
+            document.removeEventListener("click", onOutside, true);
+        }
+    }
+    setTimeout(() => document.addEventListener("click", onOutside, true), 0);
+}
+
 let columns = [
 	{ id: "col-1", label: "Not Started", isCompleted: false, color: "#6b7280" },
 	{ id: "col-2", label: "In Progress", isCompleted: false, color: "#1a73e8" },
@@ -438,6 +561,7 @@ function buildProjectRow(project, index) {
 		tabs:             project.tabs || defaultProjectTabs(),
 		notes:            project.notes || [],
 		tools:            project.tools || [],
+		color:            project.color || null,
 	};
 }
 
@@ -650,6 +774,7 @@ async function loadFromSupabase() {
 			tabs:           (row.tabs && row.tabs.length) ? row.tabs : defaultProjectTabs(),
 			notes:          row.notes || [],
 			tools:          row.tools || [],
+			color:          row.color || null,
 			todos:          [],
 		});
 		project.epics.forEach(e => { if (!e.extraColumns) e.extraColumns = []; });
@@ -775,10 +900,9 @@ function getColumnLabels() {
 }
 
 function formatDate(dateStr) {
-	if (!dateStr) return "Set due date";
-	const [y, m, d] = dateStr.split("-");
-	const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-	return `${months[+m - 1]} ${+d}, ${y}`;
+    if (!dateStr) return "Set due date";
+    const [y, m, d] = dateStr.split("-");
+    return `${d}/${m}/${y}`;
 }
 
 /* ======================
@@ -845,6 +969,8 @@ function makeEditable(element, todo, field, type = "text", options = null, onSav
 function addProject(title) {
 	const project = new Project(title.trim(), "");
 	project.epics       = [];
+	project.icon        = "";
+	project.color       = null;
 	project.resources   = { notes: "" };
 	project.code        = generateProjectCode(title.trim());
 	project.todoCounter = 0;
@@ -1097,7 +1223,7 @@ function buildTodoCard(todo, ctx) {
 	epicBtn.title = "Assign to epic";
 
 	if (!ctx.isInbox) {
-		const proj = getCurrentProject();
+		const proj = ctx.project || getCurrentProject();
 		if (proj && proj.epics && proj.epics.length > 0) {
 			epicBtn.addEventListener("click", (e) => {
 				e.stopPropagation();
@@ -1648,6 +1774,12 @@ function buildTodoCard(todo, ctx) {
 	todoCard.appendChild(todoTagsRow);
 
 	addCardTouchDrag(todoCard, todo, ctx);
+
+	// Apply project color to card border-left
+	const cardProject = ctx.project || (ctx.isInbox ? null : getCurrentProject());
+	if (cardProject?.color) {
+		todoCard.style.setProperty("border-left-color", cardProject.color);
+	}
 
 	return todoCard;
 }
@@ -2945,7 +3077,8 @@ function buildKanbanColumn(col, project, epicId, filterByEpic) {
 		? sortedArray(project.todos.filter(t => {
 			if (epicId === null) return !t.epicId || !project.epics.some(e => e.id === t.epicId);
 			return t.epicId === epicId;
-		}).filter(t => t.status === col.label)
+		}).filter(t => !isKanbanArchived(t))
+		  .filter(t => t.status === col.label)
 		  .filter(t => !stackToolFilter || (Array.isArray(t.toolIds) && t.toolIds.includes(stackToolFilter)))
 		  .filter(t => !todoTagFilter || (Array.isArray(t.tags) && t.tags.includes(todoTagFilter)))
 		  .filter(t => todoMatchesSearch(t, project.code)))
@@ -3322,6 +3455,7 @@ function renderFlatKanban(project) {
 	todoContainer.appendChild(addColBtn);
 
 	sortedArray(project.todos)
+		.filter(t => !isKanbanArchived(t))
 		.filter(t => !stackToolFilter || (Array.isArray(t.toolIds) && t.toolIds.includes(stackToolFilter)))
 		.filter(t => !todoTagFilter || (Array.isArray(t.tags) && t.tags.includes(todoTagFilter)))
 		.filter(t => todoMatchesSearch(t, project.code))
@@ -3474,6 +3608,14 @@ function addCardTouchDrag(todoCard, todo, ctx) {
    RENDER
 ====================== */
 
+const KANBAN_ARCHIVE_MS = 60 * 24 * 60 * 60 * 1000; // 60 days
+
+function isKanbanArchived(todo) {
+	if (!columns.find(c => c.label === todo.status)?.isCompleted) return false;
+	if (!todo.completedAt) return false;
+	return (Date.now() - todo.completedAt) > KANBAN_ARCHIVE_MS;
+}
+
 function renderInbox() {
 	currentView = "inbox";
 	searchQuery = "";
@@ -3558,6 +3700,101 @@ function renderInbox() {
    OVERVIEW
 ====================== */
 
+function openStatTodoModal(todo, project) {
+	const existing = document.querySelector(".stat-todo-modal-overlay");
+	if (existing) existing.remove();
+	const overlay = document.createElement("div");
+	overlay.classList.add("modal-overlay", "stat-todo-modal-overlay");
+	overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
+	const wrap = document.createElement("div");
+	wrap.classList.add("modal-card");
+	wrap.style.maxWidth = "420px";
+	wrap.style.padding = "0";
+	const closeBtn = document.createElement("button");
+	closeBtn.classList.add("modal-close-btn");
+	closeBtn.addEventListener("click", () => overlay.remove());
+	wrap.appendChild(closeBtn);
+	const card = buildTodoCard(todo, {
+		save: () => { saveProjects(); saveInbox(); renderOverview(); },
+		delete: () => {
+			if (project) {
+				const idx = project.todos.indexOf(todo);
+				if (idx !== -1) { project.todos.splice(idx, 1); saveProjects(); }
+			} else {
+				const idx = inbox.indexOf(todo);
+				if (idx !== -1) { inbox.splice(idx, 1); saveInbox(); }
+			}
+			overlay.remove();
+			renderOverview();
+		},
+		isInbox: !project,
+		project: project || null,
+	});
+	card.style.boxShadow = "none";
+	card.style.borderRadius = "0 0 16px 16px";
+	wrap.appendChild(card);
+	overlay.appendChild(wrap);
+	document.body.appendChild(overlay);
+}
+
+function buildStatPopup(todosWithCtx, anchorEl) {
+	const popup = document.createElement("div");
+	popup.classList.add("stat-todo-popup");
+	const rect = anchorEl.getBoundingClientRect();
+	popup.style.top  = `${rect.bottom + 6}px`;
+	popup.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 320 - 8))}px`;
+
+	const header = document.createElement("div");
+	header.classList.add("stat-popup-header");
+	header.textContent = `${todosWithCtx.length} todo${todosWithCtx.length !== 1 ? "s" : ""}`;
+	popup.appendChild(header);
+
+	const scrollList = document.createElement("div");
+	scrollList.classList.add("stat-todo-list");
+
+	todosWithCtx.forEach(({ todo, project }) => {
+		const row = document.createElement("div");
+		row.classList.add("stat-todo-row");
+
+		if (project?.code && todo.number) {
+			const badge = document.createElement("span");
+			badge.classList.add("todo-number-badge");
+			badge.textContent = `${project.code}-${todo.number}`;
+			row.appendChild(badge);
+		}
+
+		const title = document.createElement("span");
+		title.classList.add("stat-todo-title");
+		title.textContent = todo.title || "Untitled";
+		row.appendChild(title);
+
+		if (todo.priority) {
+			const pri = document.createElement("span");
+			pri.classList.add("todo-priority", "stat-todo-chip");
+			pri.textContent = todo.priority;
+			row.appendChild(pri);
+		}
+
+		if (todo.dueDate) {
+			const due = document.createElement("span");
+			due.classList.add("stat-todo-due");
+			due.textContent = formatDate(todo.dueDate);
+			row.appendChild(due);
+		}
+
+		row.addEventListener("click", (e) => {
+			e.stopPropagation();
+			popup.remove();
+			openStatTodoModal(todo, project);
+		});
+
+		scrollList.appendChild(row);
+	});
+
+	popup.appendChild(scrollList);
+	return popup;
+}
+
 function renderOverview() {
 	addTodoBtn.style.display = "none";
 	searchQuery = "";
@@ -3602,6 +3839,10 @@ function renderOverview() {
 	const allProjectTodos = projects.flatMap(p => p.todos);
 	const allTodos = [...allProjectTodos, ...inbox];
 
+	// Build todos-with-ctx arrays for popup
+	const allProjectTodosWithCtx = projects.flatMap(p => p.todos.map(t => ({ todo: t, project: p })));
+	const allTodosWithCtx = [...allProjectTodosWithCtx, ...inbox.map(t => ({ todo: t, project: null }))];
+
 	const totalCount = allTodos.length;
 	const completedCount = allTodos.filter(t => completedLabels.includes(t.status)).length;
 	const highPriorityCount = allTodos.filter(t => (t.priority || "").toLowerCase() === "high").length;
@@ -3610,16 +3851,24 @@ function renderOverview() {
 		return new Date(t.dueDate).getTime() < now;
 	}).length;
 
+	const completedTodosWithCtx = allTodosWithCtx.filter(({ todo }) => completedLabels.includes(todo.status));
+	const highPriorityTodosWithCtx = allTodosWithCtx.filter(({ todo }) => (todo.priority || "").toLowerCase() === "high");
+	const overdueTodosWithCtx = allTodosWithCtx.filter(({ todo }) => {
+		if (!todo.dueDate || completedLabels.includes(todo.status)) return false;
+		return new Date(todo.dueDate).getTime() < now;
+	});
+	const inboxTodosWithCtx = inbox.map(t => ({ todo: t, project: null }));
+
 	// Stats row
 	const statsRow = document.createElement("div");
 	statsRow.classList.add("overview-stats-row");
 
 	[
-		{ label: "Total", value: totalCount },
-		{ label: "Completed", value: completedCount },
-		{ label: "High Priority", value: highPriorityCount },
-		{ label: "Overdue", value: overdueCount },
-		{ label: "In Inbox", value: inbox.length },
+		{ label: "Total",         value: totalCount,         todos: allTodosWithCtx },
+		{ label: "Completed",     value: completedCount,     todos: completedTodosWithCtx },
+		{ label: "High Priority", value: highPriorityCount,  todos: highPriorityTodosWithCtx },
+		{ label: "Overdue",       value: overdueCount,       todos: overdueTodosWithCtx },
+		{ label: "In Inbox",      value: inbox.length,       todos: inboxTodosWithCtx },
 	].forEach(stat => {
 		const card = document.createElement("div");
 		card.classList.add("overview-stat-card");
@@ -3631,6 +3880,27 @@ function renderOverview() {
 		lbl.classList.add("overview-stat-label");
 		lbl.textContent = stat.label;
 		card.append(val, lbl);
+
+		if (stat.todos.length > 0) {
+			card.classList.add("has-popup");
+			let activePopup = null;
+			card.addEventListener("mouseenter", () => {
+				if (activePopup) activePopup.remove();
+				activePopup = buildStatPopup(stat.todos, card);
+				document.body.appendChild(activePopup);
+				activePopup.addEventListener("mouseleave", () => {
+					activePopup.remove();
+					activePopup = null;
+				});
+			});
+			card.addEventListener("mouseleave", (e) => {
+				if (activePopup && !activePopup.contains(e.relatedTarget)) {
+					activePopup.remove();
+					activePopup = null;
+				}
+			});
+		}
+
 		statsRow.appendChild(card);
 	});
 
@@ -3767,8 +4037,6 @@ function renderOverviewCompleted() {
 	let search = "";
 	let tagFilter = null;
 	let projectFilter = null;
-	let sortField = "completedAt"; // completedAt | title | priority
-	let sortDir = "desc";
 
 	const allProjects = [...new Set(allTodos.map(({ project }) => project).filter(Boolean))];
 	const allTags = [...new Set(allTodos.flatMap(({ todo }) => todo.tags || []))];
@@ -3804,12 +4072,11 @@ function renderOverviewCompleted() {
 	if (allTags.length) controls.appendChild(tagSel);
 	wrapper.appendChild(controls);
 
-	const groupsContainer = document.createElement("div");
-	groupsContainer.classList.add("ov-completed-groups");
-	wrapper.appendChild(groupsContainer);
+	const gridContainer = document.createElement("div");
+	wrapper.appendChild(gridContainer);
 
 	function rebuild() {
-		groupsContainer.innerHTML = "";
+		gridContainer.innerHTML = "";
 		const q = search.toLowerCase();
 
 		const filtered = allTodos.filter(({ todo, project }) => {
@@ -3826,77 +4093,50 @@ function renderOverviewCompleted() {
 			const empty = document.createElement("div");
 			empty.classList.add("ov-empty-msg");
 			empty.textContent = "No completed todos.";
-			groupsContainer.appendChild(empty);
+			gridContainer.appendChild(empty);
 			return;
 		}
 
-		// Group by date completed (day)
-		const groups = new Map();
-		filtered.forEach(({ todo, project }) => {
-			const ts = todo.completedAt || todo.updatedAt || todo.createdAt || 0;
-			const day = new Date(ts).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-			if (!groups.has(day)) groups.set(day, []);
-			groups.get(day).push({ todo, project, ts });
-		});
-
-		// Sort groups newest first
-		const sortedGroups = [...groups.entries()].sort((a, b) => {
-			const aTs = Math.max(...a[1].map(x => x.ts));
-			const bTs = Math.max(...b[1].map(x => x.ts));
+		// Sort newest first by completedAt/updatedAt
+		const sorted = [...filtered].sort((a, b) => {
+			const aTs = a.todo.completedAt || a.todo.updatedAt || 0;
+			const bTs = b.todo.completedAt || b.todo.updatedAt || 0;
 			return bTs - aTs;
 		});
 
-		sortedGroups.forEach(([day, items]) => {
-			const section = document.createElement("div");
-			section.classList.add("ov-completed-section");
+		const grid = document.createElement("div");
+		grid.classList.add("notes-grid");
 
-			const heading = document.createElement("h3");
-			heading.classList.add("ov-completed-date");
-			heading.textContent = day;
-			section.appendChild(heading);
+		let lastDay = null;
+		sorted.forEach(({ todo, project }) => {
+			const ts = todo.completedAt || todo.updatedAt || 0;
+			const day = ts ? new Date(ts).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" }) : "Unknown date";
 
-			const list = document.createElement("div");
-			list.classList.add("ov-completed-list");
+			if (day !== lastDay) {
+				lastDay = day;
+				const separator = document.createElement("div");
+				separator.classList.add("ov-completed-date-separator");
+				separator.textContent = day;
+				grid.appendChild(separator);
+			}
 
-			items.sort((a, b) => (b.ts - a.ts)).forEach(({ todo, project }) => {
-				const row = document.createElement("div");
-				row.classList.add("ov-completed-row");
-
-				if (project?.code) {
-					const badge = document.createElement("span");
-					badge.classList.add("todo-number-badge");
-					badge.textContent = todo.number ? `${project.code}-${todo.number}` : project.code;
-					row.appendChild(badge);
-				}
-
-				const title = document.createElement("span");
-				title.classList.add("ov-completed-title");
-				title.textContent = todo.title || "Untitled";
-				row.appendChild(title);
-
-				if (todo.priority) {
-					const pri = document.createElement("span");
-					pri.classList.add("todo-priority", "ov-row-chip");
-					pri.dataset.priority = (todo.priority || "").toLowerCase();
-					pri.textContent = todo.priority;
-					row.appendChild(pri);
-				}
-
-				if ((todo.tags || []).length) {
-					todo.tags.slice(0, 3).forEach(tag => {
-						const chip = document.createElement("span");
-						chip.classList.add("todo-tag-chip", "ov-row-chip");
-						chip.textContent = `#${tag}`;
-						row.appendChild(chip);
-					});
-				}
-
-				list.appendChild(row);
-			});
-
-			section.appendChild(list);
-			groupsContainer.appendChild(section);
+			const ctx = {
+				save: () => { saveProjects(); rebuild(); },
+				delete: () => {
+					if (project) {
+						const idx = project.todos.indexOf(todo);
+						if (idx !== -1) { project.todos.splice(idx, 1); saveProjects(); }
+					}
+					rebuild();
+				},
+				isInbox: !project,
+				project,
+			};
+			const card = buildTodoCard(todo, ctx);
+			grid.appendChild(card);
 		});
+
+		gridContainer.appendChild(grid);
 	}
 
 	rebuild();
@@ -3970,6 +4210,38 @@ function renderOverviewInProgress() {
 	const listScroll = document.createElement("div");
 	listScroll.classList.add("inprogress-list-scroll");
 
+	function openInProgressTodoModal(todo, project) {
+		const existing = document.querySelector(".inprogress-modal-overlay");
+		if (existing) existing.remove();
+		const overlay = document.createElement("div");
+		overlay.classList.add("modal-overlay", "inprogress-modal-overlay");
+		overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
+		const wrap = document.createElement("div");
+		wrap.classList.add("modal-card");
+		wrap.style.maxWidth = "420px";
+		wrap.style.padding = "0";
+		const closeBtn = document.createElement("button");
+		closeBtn.classList.add("modal-close-btn");
+		closeBtn.addEventListener("click", () => overlay.remove());
+		wrap.appendChild(closeBtn);
+		const card = buildTodoCard(todo, {
+			save: () => { saveProjects(); rebuildTimeline(); renderList(); },
+			delete: () => {
+				const idx = project.todos.indexOf(todo);
+				if (idx !== -1) { project.todos.splice(idx, 1); saveProjects(); }
+				overlay.remove();
+				renderOverviewInProgress();
+			},
+			isInbox: false,
+			project,
+		});
+		card.style.boxShadow = "none";
+		card.style.borderRadius = "0 0 16px 16px";
+		wrap.appendChild(card);
+		overlay.appendChild(wrap);
+		document.body.appendChild(overlay);
+	}
+
 	function renderList() {
 		listScroll.innerHTML = "";
 		inProgressTodos.forEach(({ todo, project }) => {
@@ -3991,6 +4263,11 @@ function renderOverviewInProgress() {
 			card.addEventListener("dragstart", (e) => {
 				e.dataTransfer.setData("application/todo-id", todo.id);
 				e.dataTransfer.effectAllowed = "copy";
+			});
+
+			card.addEventListener("click", (e) => {
+				e.stopPropagation();
+				openInProgressTodoModal(todo, project);
 			});
 
 			listScroll.appendChild(card);
@@ -4030,10 +4307,22 @@ function renderOverviewInProgress() {
 						const block = document.createElement("div");
 						block.classList.add("timeline-block");
 						block.style.height = `${(sched.endHour - sched.startHour) * 52 - 2}px`;
+						block.draggable = true;
+						block.addEventListener("dragstart", (e) => {
+							e.dataTransfer.setData("application/todo-move", JSON.stringify({ todoId: todo.id, fromDate: dateStr }));
+							e.dataTransfer.effectAllowed = "move";
+						});
+						block.addEventListener("click", (e) => {
+							if (e.target.closest(".timeline-block-remove, .timeline-block-resize")) return;
+							e.stopPropagation();
+							openInProgressTodoModal(todo, project);
+						});
 						if (project?.code) {
 							const badge = document.createElement("span");
 							badge.classList.add("todo-number-badge");
 							badge.style.fontSize = "0.6rem";
+							badge.style.alignSelf = "flex-start";
+							badge.style.width = "fit-content";
 							badge.textContent = `${project.code}-${todo.number || ""}`;
 							block.appendChild(badge);
 						}
@@ -4051,6 +4340,31 @@ function renderOverviewInProgress() {
 							rebuildTimeline();
 						});
 						block.appendChild(removeBtn);
+
+						const resizeHandle = document.createElement("div");
+						resizeHandle.classList.add("timeline-block-resize");
+						resizeHandle.addEventListener("mousedown", (e) => {
+							e.stopPropagation();
+							e.preventDefault();
+							const SLOT_H = 52;
+							const startY = e.clientY;
+							const startEnd = sched.endHour;
+							function onMove(ev) {
+								const delta = Math.round((ev.clientY - startY) / SLOT_H);
+								sched.endHour = Math.max(sched.startHour + 1, Math.min(24, startEnd + delta));
+								block.style.height = `${(sched.endHour - sched.startHour) * SLOT_H - 2}px`;
+							}
+							function onUp() {
+								document.removeEventListener("mousemove", onMove);
+								document.removeEventListener("mouseup", onUp);
+								saveProjects();
+								rebuildTimeline();
+							}
+							document.addEventListener("mousemove", onMove);
+							document.addEventListener("mouseup", onUp);
+						});
+						block.appendChild(resizeHandle);
+
 						slot.appendChild(block);
 					} else {
 						slot.classList.add("timeline-slot-occupied");
@@ -4063,6 +4377,22 @@ function renderOverviewInProgress() {
 			slot.addEventListener("drop", (e) => {
 				e.preventDefault();
 				slot.classList.remove("timeline-slot-drag-over");
+				const moveData = e.dataTransfer.getData("application/todo-move");
+				if (moveData) {
+					const { todoId, fromDate } = JSON.parse(moveData);
+					const found = inProgressTodos.find(x => x.todo.id === todoId);
+					if (!found) return;
+					if (!found.todo.schedule) found.todo.schedule = {};
+					const prevSched = found.todo.schedule[fromDate];
+					const duration = prevSched ? (prevSched.endHour - prevSched.startHour) : 1;
+					if (fromDate !== dateStr || prevSched?.startHour !== h) {
+						delete found.todo.schedule[fromDate];
+						found.todo.schedule[dateStr] = { startHour: h, endHour: Math.min(h + duration, 24) };
+						saveProjects();
+						rebuildTimeline();
+					}
+					return;
+				}
 				const todoId = e.dataTransfer.getData("application/todo-id");
 				const found = inProgressTodos.find(x => x.todo.id === todoId);
 				if (!found) return;
@@ -4548,6 +4878,22 @@ function renderTodos() {
 	todoContainer.innerHTML = "";
 	todoContainer.classList.remove("swimlane-mode");
 	todoContainer.classList.remove("overview-view");
+
+	// Project icon in title wrap
+	const titleWrap = document.querySelector("#project-title-wrap");
+	let titleIcon = titleWrap.querySelector(".project-title-icon");
+	if (!titleIcon) {
+		titleIcon = document.createElement("span");
+		titleIcon.classList.add("material-icons-round", "project-title-icon");
+		titleWrap.insertBefore(titleIcon, projectTitle);
+	}
+	titleIcon.textContent = project.icon || "folder";
+	titleIcon.style.display = project.icon ? "" : "none";
+	titleIcon.addEventListener("click", (e) => {
+		e.stopPropagation();
+		openIconPicker(project, titleIcon, () => { renderTodos(); });
+	});
+
 	projectTitle.textContent = project.title;
 
 	// Code badge — use onclick (single handler, no accumulation)
@@ -4904,6 +5250,31 @@ function renderProjects() {
 				renderTodos();
 			}
 		});
+
+		// Color swatch in sidebar
+		const colorSwatch = document.createElement("button");
+		colorSwatch.classList.add("project-color-swatch");
+		colorSwatch.style.background = project.color || "var(--md-chip-bg)";
+		colorSwatch.title = "Pick project color";
+		colorSwatch.addEventListener("click", (e) => {
+			e.stopPropagation();
+			openColorPicker(project, colorSwatch, () => {
+				colorSwatch.style.background = project.color || "var(--md-chip-bg)";
+				renderProjects();
+				renderTodos();
+			});
+		});
+		item.appendChild(colorSwatch);
+
+		// Project icon in sidebar
+		const iconEl = document.createElement("span");
+		iconEl.classList.add("material-icons-round", "project-sidebar-icon");
+		iconEl.textContent = project.icon || "folder";
+		iconEl.addEventListener("click", (e) => {
+			e.stopPropagation();
+			openIconPicker(project, iconEl, () => { renderProjects(); });
+		});
+		item.appendChild(iconEl);
 
 		// Code badge in sidebar
 		if (project.code) {
