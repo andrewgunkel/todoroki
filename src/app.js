@@ -321,6 +321,13 @@ const MATERIAL_ICONS = [
 	"restaurant","coffee","local_florist","pets","nature","wb_sunny","cloud","lock",
 ];
 
+function getContrastColor(hex) {
+	const r = parseInt(hex.slice(1, 3), 16);
+	const g = parseInt(hex.slice(3, 5), 16);
+	const b = parseInt(hex.slice(5, 7), 16);
+	return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.55 ? "#1a1a2e" : "#ffffff";
+}
+
 function openIconPicker(project, anchorEl, onPick) {
 	const existing = document.querySelector(".icon-picker-popup");
 	if (existing) { existing.remove(); return; }
@@ -3710,10 +3717,8 @@ function openStatTodoModal(todo, project) {
 	wrap.classList.add("modal-card");
 	wrap.style.maxWidth = "420px";
 	wrap.style.padding = "0";
-	const closeBtn = document.createElement("button");
-	closeBtn.classList.add("modal-close-btn");
-	closeBtn.addEventListener("click", () => overlay.remove());
-	wrap.appendChild(closeBtn);
+	wrap.style.borderLeft = "none";
+	wrap.style.overflow = "hidden";
 	const card = buildTodoCard(todo, {
 		save: () => { saveProjects(); saveInbox(); renderOverview(); },
 		delete: () => {
@@ -3731,7 +3736,7 @@ function openStatTodoModal(todo, project) {
 		project: project || null,
 	});
 	card.style.boxShadow = "none";
-	card.style.borderRadius = "0 0 16px 16px";
+	card.style.borderRadius = "0";
 	wrap.appendChild(card);
 	overlay.appendChild(wrap);
 	document.body.appendChild(overlay);
@@ -4220,10 +4225,8 @@ function renderOverviewInProgress() {
 		wrap.classList.add("modal-card");
 		wrap.style.maxWidth = "420px";
 		wrap.style.padding = "0";
-		const closeBtn = document.createElement("button");
-		closeBtn.classList.add("modal-close-btn");
-		closeBtn.addEventListener("click", () => overlay.remove());
-		wrap.appendChild(closeBtn);
+		wrap.style.borderLeft = "none";
+		wrap.style.overflow = "hidden";
 		const card = buildTodoCard(todo, {
 			save: () => { saveProjects(); rebuildTimeline(); renderList(); },
 			delete: () => {
@@ -4236,7 +4239,7 @@ function renderOverviewInProgress() {
 			project,
 		});
 		card.style.boxShadow = "none";
-		card.style.borderRadius = "0 0 16px 16px";
+		card.style.borderRadius = "0";
 		wrap.appendChild(card);
 		overlay.appendChild(wrap);
 		document.body.appendChild(overlay);
@@ -5251,28 +5254,39 @@ function renderProjects() {
 			}
 		});
 
-		// Color swatch in sidebar
-		const colorSwatch = document.createElement("button");
-		colorSwatch.classList.add("project-color-swatch");
-		colorSwatch.style.background = project.color || "var(--md-chip-bg)";
-		colorSwatch.title = "Pick project color";
-		colorSwatch.addEventListener("click", (e) => {
+		// Apply project color: active → colored background, inactive → colored icon
+		const isActiveProject = project.id === currentProjectId && currentView === "project";
+		if (project.color) {
+			item.style.setProperty("--project-color", project.color);
+			item.style.setProperty("--project-contrast", getContrastColor(project.color));
+			item.dataset.hasColor = "true";
+		}
+
+		// Right-click on item → color picker
+		item.addEventListener("contextmenu", (e) => {
+			e.preventDefault();
 			e.stopPropagation();
-			openColorPicker(project, colorSwatch, () => {
-				colorSwatch.style.background = project.color || "var(--md-chip-bg)";
-				renderProjects();
-				renderTodos();
-			});
+			openColorPicker(project, item, () => { renderProjects(); renderTodos(); });
 		});
-		item.appendChild(colorSwatch);
 
 		// Project icon in sidebar
 		const iconEl = document.createElement("span");
 		iconEl.classList.add("material-icons-round", "project-sidebar-icon");
 		iconEl.textContent = project.icon || "folder";
+		iconEl.title = "Click to change icon · Right-click to change colour";
 		iconEl.addEventListener("click", (e) => {
 			e.stopPropagation();
-			openIconPicker(project, iconEl, () => { renderProjects(); });
+			openIconPicker(project, iconEl, () => {
+				renderProjects();
+				// Reflect icon change in project title header immediately
+				if (project.id === currentProjectId && currentView === "project") {
+					const titleIcon = document.querySelector(".project-title-icon");
+					if (titleIcon) {
+						titleIcon.textContent = project.icon || "folder";
+						titleIcon.style.display = project.icon ? "" : "none";
+					}
+				}
+			});
 		});
 		item.appendChild(iconEl);
 

@@ -908,8 +908,8 @@ body {
 .project-item {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 8px 12px;
+    gap: 8px;
+    padding: 7px 10px 7px 12px;
     margin: 2px 8px;
     cursor: pointer;
     border-radius: 8px;
@@ -921,8 +921,27 @@ body {
 }
 
 .project-item.active {
-    background: var(--palette-accent);
-    color: var(--palette-dark);
+    background: var(--palette-dark);
+    color: #ffffff;
+}
+.project-item.active .project-sidebar-icon { color: #ffffff; opacity: 1; }
+.project-item.active .sidebar-project-code { color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.15); }
+
+/* Color-aware active state — overrides palette accent */
+.project-item[data-has-color].active {
+    background: var(--project-color) !important;
+    color: var(--project-contrast) !important;
+}
+.project-item[data-has-color].active .project-sidebar-icon,
+.project-item[data-has-color].active .project-name,
+.project-item[data-has-color].active .sidebar-project-code {
+    color: var(--project-contrast) !important;
+    opacity: 1;
+}
+/* Deselected: icon uses project color */
+.project-item[data-has-color]:not(.active) .project-sidebar-icon {
+    color: var(--project-color);
+    opacity: 1;
 }
 
 .project-name {
@@ -947,8 +966,8 @@ body {
 }
 
 .project-item.active .project-name-input {
-    color: var(--palette-dark);
-    border-bottom-color: rgba(99, 102, 241, 0.5);
+    color: #ffffff;
+    border-bottom-color: rgba(255,255,255,0.4);
 }
 
 .project-delete-btn {
@@ -964,11 +983,7 @@ body {
 }
 
 .project-item:hover .project-delete-btn { opacity: 1; }
-.project-item.active .project-delete-btn { color: rgba(0,0,0,0.35); }
-.project-item.active .sidebar-project-code {
-    color: rgba(0,0,0,0.65);
-    background: rgba(0,0,0,0.12);
-}
+.project-item.active .project-delete-btn { color: rgba(255,255,255,0.5); }
 .project-delete-btn:hover { color: #ff6b6b !important; }
 
 .project-add-row {
@@ -1433,7 +1448,7 @@ body {
     flex-shrink: 0;
     transition: background 0.3s;
 }
-.sync-dot--syncing { background: #f59e0b; animation: sync-pulse 0.8s ease-in-out infinite alternate; }
+.sync-dot--syncing { background: #22c55e; animation: sync-pulse 0.8s ease-in-out infinite alternate; }
 .sync-dot--ok      { background: #22c55e; }
 .sync-dot--error   { background: #ef4444; }
 @keyframes sync-pulse { from { opacity: 0.4; } to { opacity: 1; } }
@@ -4427,7 +4442,6 @@ textarea.modal-form-input {
     border-radius: 4px;
     padding: 1px 5px;
     flex-shrink: 0;
-    margin-right: 2px;
     line-height: 1.4;
     align-self: center;
 }
@@ -5142,12 +5156,12 @@ textarea.modal-form-input {
 ======================== */
 
 .project-sidebar-icon {
-    font-size: 1rem;
+    font-size: 1.1rem;
     cursor: pointer;
     flex-shrink: 0;
     color: inherit;
-    opacity: 0.7;
-    transition: opacity 0.15s;
+    opacity: 0.75;
+    transition: opacity 0.15s, color 0.15s;
     user-select: none;
     line-height: 1;
 }
