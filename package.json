@@ -1,23 +1,23 @@
 {
   "name": "odin-todo",
   "version": "1.0.0",
-  "description": "Odin Foundation: To-Do List: https://www.theodinproject.com/lessons/node-path-javascript-todo-list",
+  "description": "Todoroki - A productivity tracker and AI personal assistant",
   "scripts": {
     "start": "webpack serve --mode development",
     "build": "webpack --mode production"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/andrewgunkel/odin-todo.git"
+    "url": "git+https://github.com/andrewgunkel/todoroki.git"
   },
   "keywords": [],
   "author": "Andrew Gunkel",
   "license": "ISC",
   "type": "module",
   "bugs": {
-    "url": "https://github.com/andrewgunkel/odin-todo/issues"
+    "url": "https://github.com/andrewgunkel/todoroki/issues"
   },
-  "homepage": "https://github.com/andrewgunkel/odin-todo#readme",
+  "homepage": "https://github.com/andrewgunkel/todoroki#readme",
   "devDependencies": {
     "css-loader": "^7.1.4",
     "html-loader": "^5.1.0",
