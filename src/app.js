@@ -62,7 +62,7 @@ let overviewTab = "dashboard"; // "dashboard" | "notes"
 let lastRemoteSync = 0; // timestamp of the last successful pull from Supabase
 
 // Cross-device user preferences — loaded from Supabase after auth
-let userPrefs = { theme: "light", avatarColor: null, displayName: "", generalNotes: [] };
+let userPrefs = { theme: "light", avatarColor: null, displayName: "", generalNotes: [], anthropicApiKey: null };
 
 function showColumnDeleteModal(col) {
 	const others = columns.filter(c => c.id !== col.id);
@@ -572,6 +572,7 @@ async function loadUserPrefs() {
 		userPrefs.avatarColor = data.avatar_color || null;
 		userPrefs.displayName = data.display_name || "";
 		userPrefs.generalNotes = data.general_notes || [];
+		userPrefs.anthropicApiKey = data.anthropic_api_key || null;
 	} else {
 		// First login on this device — migrate from localStorage then save
 		const localTheme = localStorage.getItem("theme");
@@ -589,17 +590,18 @@ async function saveUserPrefs() {
 	try {
 		let { error } = await supabase.from("user_preferences").upsert(
 			{
-				user_id:       currentUser.id,
-				theme:         userPrefs.theme,
-				avatar_color:  userPrefs.avatarColor,
-				display_name:  userPrefs.displayName,
-				general_notes: userPrefs.generalNotes,
-				updated_at:    new Date().toISOString(),
+				user_id:          currentUser.id,
+				theme:            userPrefs.theme,
+				avatar_color:     userPrefs.avatarColor,
+				display_name:     userPrefs.displayName,
+				general_notes:    userPrefs.generalNotes,
+				anthropic_api_key: userPrefs.anthropicApiKey || null,
+				updated_at:       new Date().toISOString(),
 			},
 			{ onConflict: "user_id" }
 		);
-		if (error && error.code === "42703") {
-			// general_notes column not yet migrated — retry without it
+		if (isMissingColumnError(error)) {
+			// column not yet migrated — retry without newer columns
 			({ error } = await supabase.from("user_preferences").upsert(
 				{
 					user_id:      currentUser.id,
@@ -3896,6 +3898,23 @@ function buildStatPopup(todosWithCtx, anchorEl) {
 	return popup;
 }
 
+async function callClaudeProxy(messages, { model = "claude-haiku-4-5-20251001", system, max_tokens = 1024 } = {}) {
+	const { data: { session } } = await supabase.auth.getSession();
+	if (!session) throw new Error("Not authenticated");
+	const res = await fetch("/api/claude", {
+		method: "POST",
+		headers: { "Content-Type": "application/json", "Authorization": `Bearer ${session.access_token}` },
+		body: JSON.stringify({ messages, model, system, max_tokens }),
+	});
+	const data = await res.json();
+	if (!res.ok) {
+		const err = new Error(data.message || data.error || "AI request failed");
+		err.code = data.error;
+		throw err;
+	}
+	return data;
+}
+
 function renderOverview() {
 	addTodoBtn.style.display = "none";
 	searchQuery = "";
@@ -4006,6 +4025,124 @@ function renderOverview() {
 	});
 
 	todoContainer.appendChild(statsRow);
+
+	// AI summary panel
+	const aiPanel = document.createElement("div");
+	aiPanel.classList.add("overview-ai-panel");
+
+	if (!userPrefs.anthropicApiKey) {
+		const noKeyMsg = document.createElement("div");
+		noKeyMsg.classList.add("overview-ai-no-key");
+		const noKeyIcon = document.createElement("span");
+		noKeyIcon.classList.add("material-icons-round");
+		noKeyIcon.textContent = "auto_awesome";
+		const noKeyText = document.createElement("span");
+		noKeyText.textContent = "Add your Anthropic API key in Settings to use AI features";
+		const noKeyBtn = document.createElement("button");
+		noKeyBtn.classList.add("overview-ai-settings-btn");
+		noKeyBtn.textContent = "Open Settings";
+		noKeyBtn.addEventListener("click", () => {
+			const userRow = document.querySelector(".sidebar-user-row");
+			if (userRow) userRow.click();
+		});
+		noKeyMsg.append(noKeyIcon, noKeyText, noKeyBtn);
+		aiPanel.appendChild(noKeyMsg);
+	} else {
+		const summariseBtn = document.createElement("button");
+		summariseBtn.classList.add("overview-ai-btn");
+		const btnIcon = document.createElement("span");
+		btnIcon.classList.add("material-icons-round");
+		btnIcon.textContent = "auto_awesome";
+		const btnLabel = document.createElement("span");
+		btnLabel.textContent = "Summarise my todos";
+		summariseBtn.append(btnIcon, btnLabel);
+
+		const resultCard = document.createElement("div");
+		resultCard.classList.add("overview-ai-result");
+		resultCard.style.display = "none";
+
+		summariseBtn.addEventListener("click", async () => {
+			if (summariseBtn.dataset.loading) return;
+			summariseBtn.dataset.loading = "1";
+			btnLabel.textContent = "Summarising…";
+			btnIcon.textContent = "hourglass_empty";
+			summariseBtn.disabled = true;
+			resultCard.style.display = "none";
+			try {
+				const inProgressStatuses = columns.filter(c => !c.isCompleted).map(c => c.label);
+				const todoList = projects.flatMap(p => p.todos.filter(t => inProgressStatuses.includes(t.status)).map(t => ({
+					project: p.title,
+					title: t.title,
+					priority: t.priority || "Low",
+					status: t.status,
+					dueDate: t.dueDate || null,
+					description: t.description || "",
+				})));
+				const inboxActive = inbox.filter(t => inProgressStatuses.includes(t.status)).map(t => ({
+					project: "Inbox",
+					title: t.title,
+					priority: t.priority || "Low",
+					status: t.status,
+					dueDate: t.dueDate || null,
+					description: t.description || "",
+				}));
+				const allActive = [...todoList, ...inboxActive];
+
+				if (!allActive.length) {
+					resultCard.style.display = "";
+					resultCard.innerHTML = "";
+					const empty = document.createElement("p");
+					empty.textContent = "No active todos to summarise.";
+					resultCard.appendChild(empty);
+					return;
+				}
+
+				const todoText = allActive.map(t =>
+					`- [${t.project}] ${t.title} (${t.priority} priority${t.dueDate ? `, due ${t.dueDate}` : ""}${t.description ? `: ${t.description.slice(0, 100)}` : ""})`
+				).join("\n");
+
+				const response = await callClaudeProxy(
+					[{ role: "user", content: `Here are my active todos:\n\n${todoText}\n\nPlease give me a concise summary: what's most important, any overdue or high-priority items, and a suggested focus for today. Keep it to 3-4 sentences.` }],
+					{ system: "You are a helpful productivity assistant. Be concise, practical, and encouraging." }
+				);
+
+				const summary = response.content?.[0]?.text || "No summary returned.";
+				resultCard.style.display = "";
+				resultCard.innerHTML = "";
+				const summaryHeader = document.createElement("div");
+				summaryHeader.classList.add("overview-ai-result-header");
+				const summaryIcon = document.createElement("span");
+				summaryIcon.classList.add("material-icons-round");
+				summaryIcon.textContent = "auto_awesome";
+				const summaryTitle = document.createElement("span");
+				summaryTitle.textContent = "AI Summary";
+				const dismissBtn = document.createElement("button");
+				dismissBtn.classList.add("overview-ai-dismiss");
+				dismissBtn.innerHTML = "×";
+				dismissBtn.addEventListener("click", () => { resultCard.style.display = "none"; });
+				summaryHeader.append(summaryIcon, summaryTitle, dismissBtn);
+				const summaryText = document.createElement("p");
+				summaryText.classList.add("overview-ai-summary-text");
+				summaryText.textContent = summary;
+				resultCard.append(summaryHeader, summaryText);
+			} catch (err) {
+				resultCard.style.display = "";
+				resultCard.innerHTML = "";
+				const errMsg = document.createElement("p");
+				errMsg.classList.add("overview-ai-error");
+				errMsg.textContent = err.message || "Failed to get summary.";
+				resultCard.appendChild(errMsg);
+			} finally {
+				delete summariseBtn.dataset.loading;
+				btnLabel.textContent = "Summarise my todos";
+				btnIcon.textContent = "auto_awesome";
+				summariseBtn.disabled = false;
+			}
+		});
+
+		aiPanel.append(summariseBtn, resultCard);
+	}
+	todoContainer.appendChild(aiPanel);
 
 	// Per-project section
 	if (projects.length > 0) {
@@ -5665,6 +5802,42 @@ function openUserSettings(anchorEl, user) {
 	themeSection.appendChild(themeRow);
 	popup.appendChild(themeSection);
 
+	// ── AI / API Key ──
+	const apiSection = document.createElement("div");
+	apiSection.classList.add("user-settings-section");
+	const apiLabel = document.createElement("label");
+	apiLabel.classList.add("user-settings-label");
+	apiLabel.textContent = "Anthropic API Key";
+	const apiDesc = document.createElement("p");
+	apiDesc.classList.add("user-settings-api-desc");
+	apiDesc.textContent = "Powers AI features. Your key is stored in your account and never shared.";
+	const apiRow = document.createElement("div");
+	apiRow.classList.add("user-settings-api-row");
+	const apiInput = document.createElement("input");
+	apiInput.type = "password";
+	apiInput.classList.add("user-settings-input");
+	apiInput.placeholder = "sk-ant-…";
+	apiInput.value = userPrefs.anthropicApiKey || "";
+	apiInput.autocomplete = "off";
+	const apiSaveBtn = document.createElement("button");
+	apiSaveBtn.classList.add("user-settings-api-save");
+	apiSaveBtn.textContent = "Save";
+	const apiStatus = document.createElement("span");
+	apiStatus.classList.add("user-settings-api-status");
+	apiStatus.textContent = userPrefs.anthropicApiKey ? "✓ Key saved" : "";
+	apiSaveBtn.addEventListener("click", async () => {
+		const key = apiInput.value.trim();
+		userPrefs.anthropicApiKey = key || null;
+		await saveUserPrefs();
+		apiStatus.textContent = key ? "✓ Key saved" : "Key removed";
+		apiStatus.style.color = key ? "var(--md-status-completed-color)" : "var(--md-label-color)";
+		setTimeout(() => { if (apiStatus.textContent.includes("removed")) apiStatus.textContent = ""; }, 2000);
+	});
+	apiInput.addEventListener("keydown", (e) => { if (e.key === "Enter") apiSaveBtn.click(); });
+	apiRow.append(apiInput, apiSaveBtn);
+	apiSection.append(apiLabel, apiDesc, apiRow, apiStatus);
+	popup.appendChild(apiSection);
+
 	// ── Divider ──
 	const div3 = document.createElement("div");
 	div3.classList.add("user-settings-divider");
@@ -5684,7 +5857,7 @@ function openUserSettings(anchorEl, user) {
 	popup.style.left = `${rect.left}px`;
 	popup.style.bottom = `${window.innerHeight - rect.top + 8}px`;
 	// Clamp to viewport width
-	const popupWidth = 220;
+	const popupWidth = 280;
 	const maxLeft = window.innerWidth - popupWidth - 8;
 	popup.style.left = `${Math.min(rect.left, maxLeft)}px`;
 

@@ -1,0 +1,10 @@
+{
+    "outputDirectory": "dist",
+    "buildCommand": "npm run build",
+    "functions": {
+        "api/claude.js": { "maxDuration": 30 }
+    },
+    "rewrites": [
+        { "source": "/((?!api/).*)", "destination": "/index.html" }
+    ]
+}
