@@ -3763,6 +3763,7 @@ function renderInbox() {
 	todoContainer.classList.remove("swimlane-mode");
 	todoContainer.classList.remove("overview-view");
 	projectTitle.textContent = "Inbox";
+	setViewHeaderIcon("inbox", true);
 	projectCodeBadge.style.display = "none";
 
 	projectTabsContainer.innerHTML = "";
@@ -3949,15 +3950,39 @@ async function callClaudeProxy(messages, { model = "claude-haiku-4-5-20251001", 
 	return data;
 }
 
+function setViewHeaderIcon(text, isMaterial) {
+	const titleWrap = document.querySelector("#project-title-wrap");
+	let titleIcon = titleWrap.querySelector(".project-title-icon");
+	if (!titleIcon) {
+		titleIcon = document.createElement("span");
+		titleWrap.insertBefore(titleIcon, projectTitle);
+	}
+	titleIcon.className = "project-title-icon" + (isMaterial ? " material-symbols-rounded" : " view-title-icon");
+	titleIcon.textContent = text;
+	titleIcon.style.display = text ? "" : "none";
+	titleIcon.onclick = null;
+	titleIcon.style.cursor = "default";
+}
+
 function renderOverview() {
 	addTodoBtn.style.display = "none";
 	searchQuery = "";
 	todoContainer.innerHTML = "";
 	todoContainer.classList.remove("swimlane-mode");
 	todoContainer.classList.add("overview-view");
-	projectTitle.textContent = "Overview";
 	projectCodeBadge.style.display = "none";
 	sortBarContainer.innerHTML = "";
+
+	if (overviewTab === "assistant") {
+		projectTabsContainer.innerHTML = "";
+		projectTitle.textContent = "Assistant";
+		setViewHeaderIcon("✦", false);
+		renderOverviewAssistant();
+		return;
+	}
+
+	projectTitle.textContent = "Overview";
+	setViewHeaderIcon("◉", false);
 
 	// Tab bar: Dashboard | Notes (uses same project-tab-bar style)
 	projectTabsContainer.innerHTML = "";
@@ -3985,7 +4010,6 @@ function renderOverview() {
 	if (overviewTab === "notes")      { renderOverviewNotes();       return; }
 	if (overviewTab === "completed")  { renderOverviewCompleted();   return; }
 	if (overviewTab === "inprogress") { renderOverviewInProgress();  return; }
-	if (overviewTab === "assistant") { renderOverviewAssistant(); return; }
 
 	const completedLabels = columns.filter(c => c.isCompleted).map(c => c.label);
 	const now = Date.now();

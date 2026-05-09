@@ -5206,6 +5206,15 @@ textarea.modal-form-input {
     margin-right: 4px;
     user-select: none;
 }
+.view-title-icon {
+    font-size: 1rem;
+    color: var(--palette-dark);
+    opacity: 1;
+    flex-shrink: 0;
+    line-height: 1;
+    margin-right: 4px;
+    user-select: none;
+}
 .project-title-icon:hover { opacity: 1; }
 
 #project-title-wrap {
