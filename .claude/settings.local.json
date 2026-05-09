@@ -10,7 +10,8 @@
       "Bash(npm install *)",
       "Bash(npx webpack *)",
       "Bash(git -C /Users/andrewgunkel/repos/todoroki ls-files --error-unmatch .env)",
-      "Bash(grep -n \"#044389\\\\|rgba\\(4, 67, 137\\\\|#9d8fff\\\\|#6c63ff\\\\|#1a73e8\\\\|add-todo-btn\\\\|todo-card.selected\\\\|#main-header {\" /Users/andrewgunkel/repos/todoroki/src/styles.css)"
+      "Bash(grep -n \"#044389\\\\|rgba\\(4, 67, 137\\\\|#9d8fff\\\\|#6c63ff\\\\|#1a73e8\\\\|add-todo-btn\\\\|todo-card.selected\\\\|#main-header {\" /Users/andrewgunkel/repos/todoroki/src/styles.css)",
+      "Bash(grep -n \"^\\\\*, \\\\*::before\\\\|\\\\* {\\\\|body {\\\\|html {\" src/styles.css)"
     ]
   }
 }

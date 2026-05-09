@@ -59,6 +59,7 @@ let searchQuery = ""; // global search across todos and notes
 let dragHoverTimer = null;
 let syncTimer = null;
 let overviewTab = "dashboard"; // "dashboard" | "notes"
+let assistantHistory = []; // persists for the session
 let lastRemoteSync = 0; // timestamp of the last successful pull from Supabase
 
 // Cross-device user preferences — loaded from Supabase after auth
@@ -348,7 +349,7 @@ function openIconPicker(project, anchorEl, onPick) {
 		onPick();
 	}
 
-	// ── Custom icon name / URL input ──────────────────────────
+	// ── Custom icon name input ────────────────────────────────
 	const customRow = document.createElement("div");
 	customRow.classList.add("icon-picker-custom-row");
 
@@ -361,17 +362,19 @@ function openIconPicker(project, anchorEl, onPick) {
 	customPreview.classList.add("material-icons-round", "icon-picker-custom-preview");
 	customPreview.textContent = project.icon || "help_outline";
 
+	function toIconName(raw) {
+		return raw.trim().toLowerCase()
+			.replace(/[^a-z0-9]+/g, "_")
+			.replace(/^_+|_+$/g, "");
+	}
+
 	customInput.addEventListener("input", () => {
-		const name = customInput.value.trim()
-			.replace(/https?:\/\/.*\/([^/]+)$/, "$1") // strip URL, keep icon name
-			.replace(/[^a-z0-9_]/gi, "_").toLowerCase();
+		const name = toIconName(customInput.value);
 		customPreview.textContent = name || "help_outline";
 	});
 	customInput.addEventListener("keydown", (e) => {
 		if (e.key === "Enter") {
-			const name = customInput.value.trim()
-				.replace(/https?:\/\/.*\/([^/]+)$/, "$1")
-				.replace(/[^a-z0-9_]/gi, "_").toLowerCase();
+			const name = toIconName(customInput.value);
 			if (name) pickIcon(name);
 		}
 	});
@@ -380,9 +383,7 @@ function openIconPicker(project, anchorEl, onPick) {
 	customApply.classList.add("icon-picker-apply-btn");
 	customApply.textContent = "Use";
 	customApply.addEventListener("click", () => {
-		const name = customInput.value.trim()
-			.replace(/https?:\/\/.*\/([^/]+)$/, "$1")
-			.replace(/[^a-z0-9_]/gi, "_").toLowerCase();
+		const name = toIconName(customInput.value);
 		if (name) pickIcon(name);
 	});
 
@@ -3968,6 +3969,7 @@ function renderOverview() {
 		{ id: "inprogress", label: "In Progress" },
 		{ id: "completed",  label: "Completed" },
 		{ id: "notes",      label: "Notes" },
+		{ id: "assistant",  label: "✦ Assistant" },
 	].forEach(({ id, label }) => {
 		const btn = document.createElement("button");
 		btn.classList.add("project-tab");
@@ -3984,6 +3986,7 @@ function renderOverview() {
 	if (overviewTab === "notes")      { renderOverviewNotes();       return; }
 	if (overviewTab === "completed")  { renderOverviewCompleted();   return; }
 	if (overviewTab === "inprogress") { renderOverviewInProgress();  return; }
+	if (overviewTab === "assistant") { renderOverviewAssistant(); return; }
 
 	const completedLabels = columns.filter(c => c.isCompleted).map(c => c.label);
 	const now = Date.now();
@@ -4291,6 +4294,337 @@ function renderOverview() {
 	}
 
 	renderSelectionBar();
+}
+
+// ── Build context string from all user data ────────────────────────
+function buildAssistantContext() {
+	const completedLabels = columns.filter(c => c.isCompleted).map(c => c.label);
+	const now = new Date();
+	let ctx = `Today: ${now.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}\n`;
+	ctx += `Current time: ${now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}\n\n`;
+
+	ctx += `KANBAN COLUMNS (ordered):\n`;
+	columns.forEach(c => { ctx += `  - "${c.label}"${c.isCompleted ? " [completed]" : ""}\n`; });
+	ctx += "\n";
+
+	ctx += `PROJECTS (${projects.length}):\n`;
+	projects.forEach(p => {
+		const active = p.todos.filter(t => !completedLabels.includes(t.status));
+		const done   = p.todos.filter(t =>  completedLabels.includes(t.status));
+		ctx += `\nProject: "${p.title}" (id: ${p.id})\n`;
+		if (active.length === 0 && done.length === 0) {
+			ctx += `  (no todos)\n`;
+		} else {
+			if (active.length) {
+				ctx += `  Active todos:\n`;
+				active.forEach(t => {
+					const overdue = t.dueDate && new Date(t.dueDate) < now && !completedLabels.includes(t.status);
+					ctx += `    - id:${t.id} | "${t.title}" | ${t.status} | ${t.priority} priority`;
+					if (t.dueDate) ctx += ` | due: ${t.dueDate}${overdue ? " ⚠️ OVERDUE" : ""}`;
+					if (t.description) ctx += ` | notes: ${t.description.slice(0, 80)}`;
+					ctx += "\n";
+				});
+			}
+			if (done.length) ctx += `  Completed: ${done.length} todo(s)\n`;
+		}
+	});
+
+	ctx += `\nINBOX (${inbox.length} todos):\n`;
+	if (inbox.length === 0) {
+		ctx += `  (empty)\n`;
+	} else {
+		inbox.forEach(t => {
+			const overdue = t.dueDate && new Date(t.dueDate) < now;
+			ctx += `  - id:${t.id} | "${t.title}" | ${t.status} | ${t.priority} priority`;
+			if (t.dueDate) ctx += ` | due: ${t.dueDate}${overdue ? " ⚠️ OVERDUE" : ""}`;
+			ctx += "\n";
+		});
+	}
+
+	return ctx;
+}
+
+// ── Parse and execute a structured action from Claude's response ───
+function parseAssistantActions(text) {
+	const matches = [...text.matchAll(/<action>([\s\S]*?)<\/action>/g)];
+	return matches.map(m => { try { return JSON.parse(m[1].trim()); } catch { return null; } }).filter(Boolean);
+}
+
+function stripActionTags(text) {
+	return text.replace(/<action>[\s\S]*?<\/action>/g, "").trim();
+}
+
+async function executeAssistantAction(action) {
+	const completedLabels = columns.filter(c => c.isCompleted).map(c => c.label);
+
+	if (action.type === "create_todo") {
+		const defaultStatus = columns.find(c => !c.isCompleted)?.label || "Not Started";
+		const todo = {
+			id: self.crypto.randomUUID(),
+			title: action.title || "New todo",
+			status: action.status || defaultStatus,
+			priority: action.priority || "Low",
+			dueDate: action.due_date || "",
+			description: action.notes || "",
+			notes: action.notes || "",
+			checklist: [], referenceLink: "", epicId: null,
+			number: 0, toolIds: [], tags: [], comments: [],
+			completedAt: null, schedule: null,
+			createdAt: Date.now(), updatedAt: Date.now(),
+		};
+		if (completedLabels.includes(todo.status)) todo.completedAt = Date.now();
+		if (action.project_id) {
+			const proj = projects.find(p => p.id === action.project_id);
+			if (proj) { proj.addTodo(todo); renumberProjectTodos(proj); }
+		} else {
+			inbox.push(todo);
+		}
+		saveProjects(); saveInbox();
+		return `✓ Created todo: "${todo.title}"`;
+	}
+
+	if (action.type === "update_todo") {
+		let todo = null;
+		for (const p of projects) { todo = p.todos.find(t => t.id === action.todo_id); if (todo) break; }
+		if (!todo) todo = inbox.find(t => t.id === action.todo_id);
+		if (!todo) return `Could not find todo with id ${action.todo_id}`;
+		if (action.title    !== undefined) todo.title    = action.title;
+		if (action.priority !== undefined) todo.priority = action.priority;
+		if (action.due_date !== undefined) todo.dueDate  = action.due_date || "";
+		if (action.notes    !== undefined) todo.notes    = action.notes;
+		if (action.status   !== undefined) {
+			todo.status = action.status;
+			if (completedLabels.includes(action.status) && !todo.completedAt) todo.completedAt = Date.now();
+			else if (!completedLabels.includes(action.status)) todo.completedAt = null;
+		}
+		todo.updatedAt = Date.now();
+		saveProjects(); saveInbox();
+		return `✓ Updated todo: "${todo.title}"`;
+	}
+
+	if (action.type === "complete_todo") {
+		let todo = null;
+		for (const p of projects) { todo = p.todos.find(t => t.id === action.todo_id); if (todo) break; }
+		if (!todo) todo = inbox.find(t => t.id === action.todo_id);
+		if (!todo) return `Could not find todo with id ${action.todo_id}`;
+		const doneLabel = columns.find(c => c.isCompleted)?.label || "Done";
+		todo.status = doneLabel;
+		todo.completedAt = Date.now();
+		todo.updatedAt = Date.now();
+		saveProjects(); saveInbox();
+		return `✓ Completed: "${todo.title}"`;
+	}
+
+	return null;
+}
+
+function renderOverviewAssistant() {
+	todoContainer.innerHTML = "";
+	todoContainer.classList.remove("swimlane-mode");
+
+	const SYSTEM_PROMPT = `You are a smart, concise personal assistant for a todo/project management app called Todoroki. You help the user stay on top of their work.
+
+You have access to the user's complete project and todo data in every message. Use it to give specific, actionable answers.
+
+When the user asks you to CREATE, UPDATE, or COMPLETE a todo, you MUST include a structured action tag at the end of your response. Use this exact format (one per action):
+<action>{"type":"create_todo","title":"...","project_id":"PROJECT_ID_OR_NULL","priority":"Low|Medium|High","status":"STATUS_LABEL","due_date":"YYYY-MM-DD_OR_NULL","notes":"OPTIONAL"}</action>
+<action>{"type":"update_todo","todo_id":"ID","title":"...","status":"...","priority":"...","due_date":"...","notes":"..."}</action>
+<action>{"type":"complete_todo","todo_id":"ID"}</action>
+
+Only include fields that are changing in update_todo. Use null for project_id to add to inbox.
+For queries and summaries, do NOT include action tags — just respond with text.
+Keep responses concise. Use markdown for formatting. Never invent todo IDs — only use IDs from the context.`;
+
+	if (!userPrefs.anthropicApiKey) {
+		const noKey = document.createElement("div");
+		noKey.classList.add("assistant-no-key");
+		const icon = document.createElement("span");
+		icon.classList.add("material-icons-round");
+		icon.textContent = "auto_awesome";
+		const msg = document.createElement("p");
+		msg.textContent = "Add your Anthropic API key in Settings to use the Personal Assistant.";
+		const btn = document.createElement("button");
+		btn.classList.add("overview-ai-settings-btn");
+		btn.textContent = "Open Settings";
+		btn.addEventListener("click", () => { const r = document.querySelector(".sidebar-user-row"); if (r) r.click(); });
+		noKey.append(icon, msg, btn);
+		todoContainer.appendChild(noKey);
+		return;
+	}
+
+	const container = document.createElement("div");
+	container.classList.add("assistant-container");
+
+	// ── Quick actions ──────────────────────────────────────────────
+	const quickRow = document.createElement("div");
+	quickRow.classList.add("assistant-quick-actions");
+	const quickActions = [
+		{ label: "Summarise my week",       prompt: "Give me a summary of my week: what I've completed, what's in progress, and any upcoming deadlines." },
+		{ label: "What's overdue?",         prompt: "Which of my todos are overdue? List them with their project and how late they are." },
+		{ label: "What should I focus on?", prompt: "Based on my priorities, due dates, and workload, what should I focus on today?" },
+		{ label: "How productive have I been?", prompt: "How productive have I been recently? Look at completed todos and give me an honest assessment." },
+		{ label: "What's coming up?",       prompt: "What deadlines and todos are coming up in the next 7–14 days?" },
+	];
+	quickActions.forEach(({ label, prompt }) => {
+		const btn = document.createElement("button");
+		btn.classList.add("assistant-quick-btn");
+		btn.textContent = label;
+		btn.addEventListener("click", () => sendMessage(prompt, label));
+		quickRow.appendChild(btn);
+	});
+	container.appendChild(quickRow);
+
+	// ── Messages area ─────────────────────────────────────────────
+	const messagesEl = document.createElement("div");
+	messagesEl.classList.add("assistant-messages");
+
+	// Welcome message (only if no history yet)
+	if (assistantHistory.length === 0) {
+		const welcome = document.createElement("div");
+		welcome.classList.add("assistant-welcome");
+		const welcomeIcon = document.createElement("span");
+		welcomeIcon.classList.add("material-icons-round");
+		welcomeIcon.textContent = "auto_awesome";
+		const welcomeText = document.createElement("p");
+		welcomeText.textContent = "Hi! I can see all your projects and todos. Ask me anything, or use a quick action above.";
+		welcome.append(welcomeIcon, welcomeText);
+		messagesEl.appendChild(welcome);
+	} else {
+		// Re-render previous messages from history
+		assistantHistory.forEach(msg => {
+			appendMessage(messagesEl, msg.role, msg.displayContent || msg.content);
+		});
+	}
+
+	container.appendChild(messagesEl);
+
+	// ── Input row ─────────────────────────────────────────────────
+	const inputRow = document.createElement("div");
+	inputRow.classList.add("assistant-input-row");
+
+	const textarea = document.createElement("textarea");
+	textarea.classList.add("assistant-input");
+	textarea.placeholder = "Ask anything about your todos, or tell me what to create…";
+	textarea.rows = 1;
+	textarea.addEventListener("input", () => {
+		textarea.style.height = "auto";
+		textarea.style.height = `${Math.min(textarea.scrollHeight, 120)}px`;
+	});
+	textarea.addEventListener("keydown", (e) => {
+		if (e.key === "Enter" && !e.shiftKey) {
+			e.preventDefault();
+			if (textarea.value.trim()) sendMessage(textarea.value.trim());
+		}
+	});
+
+	const sendBtn = document.createElement("button");
+	sendBtn.classList.add("assistant-send-btn");
+	sendBtn.innerHTML = `<span class="material-icons-round">send</span>`;
+	sendBtn.addEventListener("click", () => { if (textarea.value.trim()) sendMessage(textarea.value.trim()); });
+
+	inputRow.append(textarea, sendBtn);
+	container.appendChild(inputRow);
+	todoContainer.appendChild(container);
+
+	// ── Core send/receive logic ────────────────────────────────────
+	function appendMessage(container, role, content, isAction = false) {
+		const wrapper = document.createElement("div");
+		wrapper.classList.add("assistant-message", `assistant-message--${role}`);
+		if (isAction) wrapper.classList.add("assistant-message--action");
+
+		const bubble = document.createElement("div");
+		bubble.classList.add("assistant-bubble");
+
+		if (isAction) {
+			bubble.textContent = content;
+		} else if (role === "assistant") {
+			bubble.classList.add("assistant-bubble--md");
+			bubble.innerHTML = parseMarkdown(content);
+		} else {
+			bubble.textContent = content;
+		}
+
+		wrapper.appendChild(bubble);
+		container.appendChild(wrapper);
+		container.scrollTop = container.scrollHeight;
+		return wrapper;
+	}
+
+	function showThinking() {
+		const wrapper = document.createElement("div");
+		wrapper.classList.add("assistant-message", "assistant-message--assistant", "assistant-message--thinking");
+		const bubble = document.createElement("div");
+		bubble.classList.add("assistant-bubble", "assistant-thinking");
+		bubble.innerHTML = `<span></span><span></span><span></span>`;
+		wrapper.appendChild(bubble);
+		messagesEl.appendChild(wrapper);
+		messagesEl.scrollTop = messagesEl.scrollHeight;
+		return wrapper;
+	}
+
+	async function sendMessage(text, displayText) {
+		const label = displayText || text;
+		textarea.value = "";
+		textarea.style.height = "auto";
+		sendBtn.disabled = true;
+		textarea.disabled = true;
+
+		// Show user message
+		appendMessage(messagesEl, "user", label);
+
+		// Build messages array for API (use actual prompt text, not display label)
+		const userMsg = { role: "user", content: text };
+		assistantHistory.push({ ...userMsg, displayContent: label });
+
+		// Show thinking indicator
+		const thinkingEl = showThinking();
+
+		try {
+			const context = buildAssistantContext();
+			const systemWithContext = `${SYSTEM_PROMPT}\n\n--- USER DATA ---\n${context}`;
+
+			// Build messages array (strip displayContent before sending)
+			const apiMessages = assistantHistory.map(({ role, content }) => ({ role, content }));
+
+			const response = await callClaudeProxy(apiMessages, {
+				system: systemWithContext,
+				max_tokens: 1500,
+			});
+
+			const rawContent = response.content?.[0]?.text || "";
+
+			// Parse and execute actions
+			const actions = parseAssistantActions(rawContent);
+			const displayContent = stripActionTags(rawContent);
+
+			thinkingEl.remove();
+
+			// Add assistant message to history and display
+			assistantHistory.push({ role: "assistant", content: rawContent, displayContent });
+			appendMessage(messagesEl, "assistant", displayContent);
+
+			// Execute actions and show confirmations
+			for (const action of actions) {
+				const confirmation = await executeAssistantAction(action);
+				if (confirmation) {
+					appendMessage(messagesEl, "action", confirmation, true);
+				}
+			}
+
+			// If actions modified data, re-render sidebar
+			if (actions.length > 0) {
+				renderProjects();
+			}
+
+		} catch (err) {
+			thinkingEl.remove();
+			appendMessage(messagesEl, "assistant", `Sorry, something went wrong: ${err.message}`);
+		} finally {
+			sendBtn.disabled = false;
+			textarea.disabled = false;
+			textarea.focus();
+		}
+	}
 }
 
 function renderOverviewCompleted() {
