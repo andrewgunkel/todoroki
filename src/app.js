@@ -1006,30 +1006,40 @@ function buildTodoCard(todo, ctx) {
 	todoCard.dataset.status = (todo.status || "").toLowerCase().replace(/ /g, "-");
 	if (selectedTodos.has(todo.id)) todoCard.classList.add("selected");
 
-	const todoTitle       = document.createElement("h1"); todoTitle.classList.add("todo-title");
-	const todoDescription = document.createElement("p");  todoDescription.classList.add("todo-description");
+	const todoTitle       = document.createElement("h1");   todoTitle.classList.add("todo-title");
+	const todoDescription = document.createElement("p");    todoDescription.classList.add("todo-description");
 	const todoDueDate     = document.createElement("span"); todoDueDate.classList.add("todo-due-date");
 	const todoPriority    = document.createElement("span"); todoPriority.classList.add("todo-priority");
-	const todoNotes       = document.createElement("p");  todoNotes.classList.add("todo-notes");
-	const todoChecklist   = document.createElement("ul"); todoChecklist.classList.add("todo-checklist");
-	const todoLink        = document.createElement("p");  todoLink.classList.add("todo-link");
+	const todoChecklist   = document.createElement("ul");   todoChecklist.classList.add("todo-checklist");
 	const todoStatus      = document.createElement("span"); todoStatus.classList.add("todo-status");
 
 	todoTitle.textContent       = todo.title || "Untitled";
 	todoDescription.textContent = todo.description;
 	todoDueDate.textContent     = formatDate(todo.dueDate);
 	todoPriority.textContent    = todo.priority || "Priority";
-	todoNotes.textContent       = todo.notes;
-	todoLink.textContent        = todo.referenceLink;
 	todoStatus.textContent      = todo.status || "Status";
+
+	// Migrate legacy notes string to comments array on first access
+	if (!Array.isArray(todo.comments)) todo.comments = [];
+	if (todo.notes && !todo.comments.length) {
+		todo.comments = [{ id: self.crypto.randomUUID(), text: todo.notes, createdAt: todo.updatedAt || todo.createdAt || Date.now() }];
+		todo.notes = "";
+		ctx.save();
+	}
 
 	makeEditable(todoTitle,       todo, "title",          "text",   null,                     ctx.save);
 	makeEditable(todoDescription, todo, "description",    "text",   null,                     ctx.save);
-	makeEditable(todoNotes,       todo, "notes",          "text",   null,                     ctx.save);
 	makeEditable(todoPriority,    todo, "priority",       "select", ["Low", "Medium", "High"], ctx.save);
 	makeEditable(todoDueDate,     todo, "dueDate",        "date",   null,                     ctx.save);
-	makeEditable(todoLink,        todo, "referenceLink",  "text",   null,                     ctx.save);
-	makeEditable(todoStatus,      todo, "status",         "select", getColumnLabels(),         ctx.save);
+	makeEditable(todoStatus,      todo, "status",         "select", getColumnLabels(),         () => {
+		const completedLabels = columns.filter(c => c.isCompleted).map(c => c.label);
+		if (completedLabels.includes(todo.status)) {
+			if (!todo.completedAt) todo.completedAt = Date.now();
+		} else {
+			todo.completedAt = null;
+		}
+		ctx.save();
+	});
 
 	// CHECKLIST
 	if (!Array.isArray(todo.checklist)) todo.checklist = [];
@@ -1073,15 +1083,6 @@ function buildTodoCard(todo, ctx) {
 		todoChecklist.appendChild(li);
 	});
 
-	const addChecklistInput = document.createElement("input");
-	addChecklistInput.placeholder = "+ add checklist item";
-	addChecklistInput.addEventListener("keydown", (e) => {
-		if (e.key !== "Enter" || !addChecklistInput.value.trim()) return;
-		e.preventDefault();
-		todo.checklist.push({ text: addChecklistInput.value.trim(), completed: false });
-		ctx.save();
-	});
-	todoChecklist.appendChild(addChecklistInput);
 
 	// DELETE BUTTON
 	const btnDelete = document.createElement("button");
@@ -1200,6 +1201,170 @@ function buildTodoCard(todo, ctx) {
 		select.addEventListener("blur", cleanup);
 	});
 
+	// COMMENT BUTTON
+	const commentBtn = document.createElement("button");
+	commentBtn.classList.add("comment-btn");
+	commentBtn.title = "Comments";
+	commentBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
+
+	function updateCommentBadge() {
+		const count = (todo.comments || []).length;
+		let badge = commentBtn.querySelector(".comment-count");
+		if (count > 0) {
+			if (!badge) { badge = document.createElement("span"); badge.classList.add("comment-count"); commentBtn.appendChild(badge); }
+			badge.textContent = count;
+		} else if (badge) {
+			badge.remove();
+		}
+	}
+	updateCommentBadge();
+
+	commentBtn.addEventListener("click", (e) => {
+		e.stopPropagation();
+		const existing = document.querySelector(".comments-popup");
+		if (existing) { existing.remove(); return; }
+
+		const popup = document.createElement("div");
+		popup.classList.add("comments-popup");
+
+		const rect = commentBtn.getBoundingClientRect();
+		popup.style.top  = `${Math.min(rect.bottom + 6, window.innerHeight - 320)}px`;
+		popup.style.left = `${Math.min(rect.left, window.innerWidth - 300)}px`;
+
+		const hdr = document.createElement("div");
+		hdr.classList.add("comments-popup-header");
+		const hdrTitle = document.createElement("span");
+		hdrTitle.textContent = "Comments";
+		const closeX = document.createElement("button");
+		closeX.classList.add("comments-popup-close");
+		closeX.textContent = "×";
+		closeX.addEventListener("click", () => popup.remove());
+		hdr.appendChild(hdrTitle);
+		hdr.appendChild(closeX);
+		popup.appendChild(hdr);
+
+		const list = document.createElement("div");
+		list.classList.add("comments-list");
+
+		function fmtCommentTime(ts) {
+			if (!ts) return "";
+			const d = new Date(ts);
+			return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }) + " " + d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+		}
+
+		function renderCommentList() {
+			list.innerHTML = "";
+			const sorted = [...(todo.comments || [])].reverse();
+			if (!sorted.length) {
+				const empty = document.createElement("div");
+				empty.classList.add("comments-empty");
+				empty.textContent = "No comments yet";
+				list.appendChild(empty);
+			}
+			sorted.forEach(comment => {
+				const item = document.createElement("div");
+				item.classList.add("comment-item");
+				const text = document.createElement("div");
+				text.classList.add("comment-text");
+				text.textContent = comment.text;
+				const time = document.createElement("div");
+				time.classList.add("comment-time");
+				time.textContent = fmtCommentTime(comment.createdAt);
+				item.appendChild(text);
+				item.appendChild(time);
+				list.appendChild(item);
+			});
+		}
+		renderCommentList();
+		popup.appendChild(list);
+
+		const inputRow = document.createElement("div");
+		inputRow.classList.add("comment-input-row");
+		const textarea = document.createElement("textarea");
+		textarea.classList.add("comment-textarea");
+		textarea.placeholder = "Add a comment…";
+		textarea.rows = 2;
+		const sendBtn = document.createElement("button");
+		sendBtn.classList.add("comment-send-btn");
+		sendBtn.textContent = "Add";
+		sendBtn.addEventListener("click", () => {
+			const text = textarea.value.trim();
+			if (!text) return;
+			if (!Array.isArray(todo.comments)) todo.comments = [];
+			todo.comments.push({ id: self.crypto.randomUUID(), text, createdAt: Date.now() });
+			ctx.save();
+			textarea.value = "";
+			renderCommentList();
+			updateCommentBadge();
+		});
+		textarea.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendBtn.click(); } });
+		inputRow.appendChild(textarea);
+		inputRow.appendChild(sendBtn);
+		popup.appendChild(inputRow);
+
+		document.body.appendChild(popup);
+		textarea.focus();
+
+		function onOutside(ev) {
+			if (!popup.contains(ev.target) && ev.target !== commentBtn) {
+				popup.remove();
+				document.removeEventListener("click", onOutside, true);
+			}
+		}
+		setTimeout(() => document.addEventListener("click", onOutside, true), 0);
+		popup.addEventListener("keydown", (e) => { if (e.key === "Escape") popup.remove(); });
+	});
+
+	// INFO BUTTON
+	const infoBtn = document.createElement("button");
+	infoBtn.classList.add("todo-info-btn");
+	infoBtn.title = "Info";
+	infoBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`;
+	infoBtn.addEventListener("click", (e) => {
+		e.stopPropagation();
+		const existing = document.querySelector(".todo-info-popup");
+		if (existing) { existing.remove(); return; }
+		const popup = document.createElement("div");
+		popup.classList.add("todo-info-popup");
+		const rect = infoBtn.getBoundingClientRect();
+		popup.style.top   = `${rect.bottom + 4}px`;
+		popup.style.right = `${window.innerWidth - rect.right}px`;
+
+		function infoRow(label, value) {
+			const row = document.createElement("div");
+			row.classList.add("todo-info-row");
+			const lbl = document.createElement("span");
+			lbl.classList.add("todo-info-label");
+			lbl.textContent = label;
+			const val = document.createElement("span");
+			val.classList.add("todo-info-value");
+			val.textContent = value;
+			row.appendChild(lbl);
+			row.appendChild(val);
+			return row;
+		}
+
+		const created = todo.createdAt
+			? new Date(todo.createdAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })
+			: "Unknown";
+		popup.appendChild(infoRow("Created", created));
+
+		const completedLabels = columns.filter(c => c.isCompleted).map(c => c.label);
+		if (completedLabels.includes(todo.status) && todo.completedAt) {
+			const completed = new Date(todo.completedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+			popup.appendChild(infoRow("Completed", completed));
+		}
+
+		document.body.appendChild(popup);
+		function onOutside(ev) {
+			if (!popup.contains(ev.target) && ev.target !== infoBtn) {
+				popup.remove();
+				document.removeEventListener("click", onOutside, true);
+			}
+		}
+		setTimeout(() => document.addEventListener("click", onOutside, true), 0);
+	});
+
 	// SELECTION — single click on card body
 	todoCard.addEventListener("click", (e) => {
 		if (e.target.closest("button, input, select, a")) return;
@@ -1263,6 +1428,8 @@ function buildTodoCard(todo, ctx) {
 		const proj = getCurrentProject();
 		if (proj && proj.epics && proj.epics.length > 0) todoHeader.appendChild(epicBtn);
 	}
+	todoHeader.appendChild(commentBtn);
+	todoHeader.appendChild(infoBtn);
 	todoHeader.appendChild(moveBtn);
 	todoHeader.appendChild(btnDelete);
 
@@ -1400,13 +1567,84 @@ function buildTodoCard(todo, ctx) {
 	}
 	renderTodoTags();
 
+	// ACTIONS ROW — checklist add icon + link icon
+	const todoActionsRow = document.createElement("div");
+	todoActionsRow.classList.add("todo-actions-row");
+
+	// Checklist add icon
+	const checklistAddBtn = document.createElement("button");
+	checklistAddBtn.classList.add("todo-action-btn");
+	checklistAddBtn.title = "Add checklist item";
+	checklistAddBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>`;
+	checklistAddBtn.addEventListener("click", (e) => {
+		e.stopPropagation();
+		const input = document.createElement("input");
+		input.classList.add("checklist-inline-input");
+		input.placeholder = "New item…";
+		input.addEventListener("keydown", (ev) => {
+			if (ev.key === "Enter" && input.value.trim()) {
+				todo.checklist.push({ text: input.value.trim(), completed: false });
+				ctx.save();
+				input.value = "";
+			}
+			if (ev.key === "Escape") input.blur();
+		});
+		input.addEventListener("blur", () => input.remove());
+		todoActionsRow.insertBefore(input, checklistAddBtn);
+		input.focus();
+	});
+
+	// Link icon
+	const linkBtn = document.createElement("button");
+	linkBtn.classList.add("todo-action-btn", "todo-link-btn");
+	linkBtn.title = todo.referenceLink ? todo.referenceLink : "Add link";
+	if (todo.referenceLink) linkBtn.classList.add("has-link");
+	linkBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`;
+	linkBtn.addEventListener("click", (e) => {
+		e.stopPropagation();
+		const existing = todoActionsRow.querySelector(".link-inline-input");
+		if (existing) { existing.focus(); return; }
+		const input = document.createElement("input");
+		input.classList.add("link-inline-input");
+		input.type = "url";
+		input.placeholder = "https://…";
+		input.value = todo.referenceLink || "";
+		function saveLink() {
+			todo.referenceLink = input.value.trim();
+			todo.updatedAt = Date.now();
+			ctx.save();
+			linkBtn.title = todo.referenceLink || "Add link";
+			if (todo.referenceLink) linkBtn.classList.add("has-link");
+			else linkBtn.classList.remove("has-link");
+			input.remove();
+		}
+		input.addEventListener("blur", saveLink);
+		input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") input.blur(); if (ev.key === "Escape") { input.value = todo.referenceLink || ""; input.blur(); } });
+		todoActionsRow.insertBefore(input, linkBtn);
+		input.focus();
+		input.select();
+	});
+
+	// If a link exists, make it also directly openable via right-click / middle-click
+	if (todo.referenceLink) {
+		linkBtn.addEventListener("auxclick", (e) => {
+			if (e.button === 1) { e.preventDefault(); window.open(todo.referenceLink, "_blank", "noopener"); }
+		});
+		linkBtn.addEventListener("dblclick", (e) => {
+			e.stopPropagation();
+			window.open(todo.referenceLink, "_blank", "noopener");
+		});
+	}
+
+	todoActionsRow.appendChild(checklistAddBtn);
+	todoActionsRow.appendChild(linkBtn);
+
 	todoCard.appendChild(todoHeader);
 	todoCard.appendChild(todoDescription);
 	todoCard.appendChild(todoMeta);
 	if (hasStackTab && proj?.tools?.length) todoCard.appendChild(toolBadgesRow);
-	todoCard.appendChild(todoNotes);
 	todoCard.appendChild(todoChecklist);
-	todoCard.appendChild(todoLink);
+	todoCard.appendChild(todoActionsRow);
 	todoCard.appendChild(todoTagsRow);
 
 	addCardTouchDrag(todoCard, todo, ctx);
@@ -3335,7 +3573,12 @@ function renderOverview() {
 	const tabBar = document.createElement("div");
 	tabBar.classList.add("project-tab-bar");
 
-	[{ id: "dashboard", label: "Dashboard" }, { id: "notes", label: "Notes" }].forEach(({ id, label }) => {
+	[
+		{ id: "dashboard",  label: "Dashboard" },
+		{ id: "inprogress", label: "In Progress" },
+		{ id: "completed",  label: "Completed" },
+		{ id: "notes",      label: "Notes" },
+	].forEach(({ id, label }) => {
 		const btn = document.createElement("button");
 		btn.classList.add("project-tab");
 		if (overviewTab === id) btn.classList.add("active");
@@ -3348,10 +3591,9 @@ function renderOverview() {
 	});
 	projectTabsContainer.appendChild(tabBar);
 
-	if (overviewTab === "notes") {
-		renderOverviewNotes();
-		return;
-	}
+	if (overviewTab === "notes")      { renderOverviewNotes();       return; }
+	if (overviewTab === "completed")  { renderOverviewCompleted();   return; }
+	if (overviewTab === "inprogress") { renderOverviewInProgress();  return; }
 
 	const completedLabels = columns.filter(c => c.isCompleted).map(c => c.label);
 	const now = Date.now();
@@ -3508,6 +3750,353 @@ function renderOverview() {
 	}
 
 	renderSelectionBar();
+}
+
+function renderOverviewCompleted() {
+	todoContainer.innerHTML = "";
+	todoContainer.classList.remove("swimlane-mode");
+	todoContainer.classList.add("overview-view");
+
+	const completedLabels = columns.filter(c => c.isCompleted).map(c => c.label);
+	const allTodos = [
+		...projects.flatMap(p => p.todos.map(t => ({ todo: t, project: p }))),
+		...inbox.map(t => ({ todo: t, project: null })),
+	].filter(({ todo }) => completedLabels.includes(todo.status));
+
+	// Sort / filter state
+	let search = "";
+	let tagFilter = null;
+	let projectFilter = null;
+	let sortField = "completedAt"; // completedAt | title | priority
+	let sortDir = "desc";
+
+	const allProjects = [...new Set(allTodos.map(({ project }) => project).filter(Boolean))];
+	const allTags = [...new Set(allTodos.flatMap(({ todo }) => todo.tags || []))];
+
+	const wrapper = document.createElement("div");
+	wrapper.classList.add("ov-completed-wrapper");
+
+	// Controls row
+	const controls = document.createElement("div");
+	controls.classList.add("ov-controls-row");
+
+	const searchInput = document.createElement("input");
+	searchInput.type = "search";
+	searchInput.placeholder = "Search…";
+	searchInput.classList.add("sort-search-input");
+	searchInput.style.width = "200px";
+	searchInput.addEventListener("input", () => { search = searchInput.value; rebuild(); });
+
+	const projectSel = document.createElement("select");
+	projectSel.classList.add("ov-filter-select");
+	const allProjOpt = document.createElement("option"); allProjOpt.value = ""; allProjOpt.textContent = "All projects"; projectSel.appendChild(allProjOpt);
+	allProjects.forEach(p => { const o = document.createElement("option"); o.value = p.id; o.textContent = p.title; projectSel.appendChild(o); });
+	projectSel.addEventListener("change", () => { projectFilter = projectSel.value || null; rebuild(); });
+
+	const tagSel = document.createElement("select");
+	tagSel.classList.add("ov-filter-select");
+	const allTagOpt = document.createElement("option"); allTagOpt.value = ""; allTagOpt.textContent = "All tags"; tagSel.appendChild(allTagOpt);
+	allTags.forEach(t => { const o = document.createElement("option"); o.value = t; o.textContent = `#${t}`; tagSel.appendChild(o); });
+	tagSel.addEventListener("change", () => { tagFilter = tagSel.value || null; rebuild(); });
+
+	controls.appendChild(searchInput);
+	if (allProjects.length > 1) controls.appendChild(projectSel);
+	if (allTags.length) controls.appendChild(tagSel);
+	wrapper.appendChild(controls);
+
+	const groupsContainer = document.createElement("div");
+	groupsContainer.classList.add("ov-completed-groups");
+	wrapper.appendChild(groupsContainer);
+
+	function rebuild() {
+		groupsContainer.innerHTML = "";
+		const q = search.toLowerCase();
+
+		const filtered = allTodos.filter(({ todo, project }) => {
+			if (projectFilter && project?.id !== projectFilter) return false;
+			if (tagFilter && !(todo.tags || []).includes(tagFilter)) return false;
+			if (q) {
+				const match = [todo.title, todo.description, todo.status, ...(todo.tags || [])].some(s => s?.toLowerCase().includes(q));
+				if (!match) return false;
+			}
+			return true;
+		});
+
+		if (!filtered.length) {
+			const empty = document.createElement("div");
+			empty.classList.add("ov-empty-msg");
+			empty.textContent = "No completed todos.";
+			groupsContainer.appendChild(empty);
+			return;
+		}
+
+		// Group by date completed (day)
+		const groups = new Map();
+		filtered.forEach(({ todo, project }) => {
+			const ts = todo.completedAt || todo.updatedAt || todo.createdAt || 0;
+			const day = new Date(ts).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+			if (!groups.has(day)) groups.set(day, []);
+			groups.get(day).push({ todo, project, ts });
+		});
+
+		// Sort groups newest first
+		const sortedGroups = [...groups.entries()].sort((a, b) => {
+			const aTs = Math.max(...a[1].map(x => x.ts));
+			const bTs = Math.max(...b[1].map(x => x.ts));
+			return bTs - aTs;
+		});
+
+		sortedGroups.forEach(([day, items]) => {
+			const section = document.createElement("div");
+			section.classList.add("ov-completed-section");
+
+			const heading = document.createElement("h3");
+			heading.classList.add("ov-completed-date");
+			heading.textContent = day;
+			section.appendChild(heading);
+
+			const list = document.createElement("div");
+			list.classList.add("ov-completed-list");
+
+			items.sort((a, b) => (b.ts - a.ts)).forEach(({ todo, project }) => {
+				const row = document.createElement("div");
+				row.classList.add("ov-completed-row");
+
+				if (project?.code) {
+					const badge = document.createElement("span");
+					badge.classList.add("todo-number-badge");
+					badge.textContent = todo.number ? `${project.code}-${todo.number}` : project.code;
+					row.appendChild(badge);
+				}
+
+				const title = document.createElement("span");
+				title.classList.add("ov-completed-title");
+				title.textContent = todo.title || "Untitled";
+				row.appendChild(title);
+
+				if (todo.priority) {
+					const pri = document.createElement("span");
+					pri.classList.add("todo-priority", "ov-row-chip");
+					pri.dataset.priority = (todo.priority || "").toLowerCase();
+					pri.textContent = todo.priority;
+					row.appendChild(pri);
+				}
+
+				if ((todo.tags || []).length) {
+					todo.tags.slice(0, 3).forEach(tag => {
+						const chip = document.createElement("span");
+						chip.classList.add("todo-tag-chip", "ov-row-chip");
+						chip.textContent = `#${tag}`;
+						row.appendChild(chip);
+					});
+				}
+
+				list.appendChild(row);
+			});
+
+			section.appendChild(list);
+			groupsContainer.appendChild(section);
+		});
+	}
+
+	rebuild();
+	todoContainer.appendChild(wrapper);
+}
+
+function renderOverviewInProgress() {
+	todoContainer.innerHTML = "";
+	todoContainer.classList.remove("swimlane-mode");
+	todoContainer.classList.add("overview-view");
+
+	const completedLabels = columns.filter(c => c.isCompleted).map(c => c.label);
+	const inProgressTodos = projects.flatMap(p =>
+		p.todos
+			.filter(t => !completedLabels.includes(t.status))
+			.map(t => ({ todo: t, project: p }))
+	);
+
+	const todayStr = new Date().toISOString().slice(0, 10);
+
+	// Ensure schedule structure
+	inProgressTodos.forEach(({ todo }) => {
+		if (!todo.schedule) todo.schedule = {};
+	});
+
+	// View toggle: day | week
+	let viewMode = "day"; // "day" | "week"
+	const viewDate = new Date();
+	viewDate.setHours(0, 0, 0, 0);
+
+	const outer = document.createElement("div");
+	outer.classList.add("inprogress-outer");
+
+	// Top controls
+	const topBar = document.createElement("div");
+	topBar.classList.add("inprogress-topbar");
+	const dayBtn = document.createElement("button");
+	dayBtn.classList.add("project-tab", "active");
+	dayBtn.textContent = "Day";
+	const weekBtn = document.createElement("button");
+	weekBtn.classList.add("project-tab");
+	weekBtn.textContent = "Week";
+	dayBtn.addEventListener("click", () => { viewMode = "day"; dayBtn.classList.add("active"); weekBtn.classList.remove("active"); rebuildTimeline(); });
+	weekBtn.addEventListener("click", () => { viewMode = "week"; weekBtn.classList.add("active"); dayBtn.classList.remove("active"); rebuildTimeline(); });
+	const tabGroup = document.createElement("div");
+	tabGroup.classList.add("project-tab-bar");
+	tabGroup.style.marginBottom = "0";
+	tabGroup.appendChild(dayBtn);
+	tabGroup.appendChild(weekBtn);
+	topBar.appendChild(tabGroup);
+	outer.appendChild(topBar);
+
+	const splitView = document.createElement("div");
+	splitView.classList.add("inprogress-split");
+	outer.appendChild(splitView);
+
+	// LEFT — Timeline
+	const timelinePanel = document.createElement("div");
+	timelinePanel.classList.add("timeline-panel");
+	splitView.appendChild(timelinePanel);
+
+	// RIGHT — Todo list
+	const listPanel = document.createElement("div");
+	listPanel.classList.add("inprogress-list-panel");
+
+	const listTitle = document.createElement("div");
+	listTitle.classList.add("inprogress-list-title");
+	listTitle.textContent = "In Progress";
+	listPanel.appendChild(listTitle);
+
+	const listScroll = document.createElement("div");
+	listScroll.classList.add("inprogress-list-scroll");
+
+	function renderList() {
+		listScroll.innerHTML = "";
+		inProgressTodos.forEach(({ todo, project }) => {
+			const card = document.createElement("div");
+			card.classList.add("inprogress-todo-chip");
+			card.draggable = true;
+			card.dataset.todoId = todo.id;
+
+			if (project?.code && todo.number) {
+				const badge = document.createElement("span");
+				badge.classList.add("todo-number-badge");
+				badge.textContent = `${project.code}-${todo.number}`;
+				card.appendChild(badge);
+			}
+			const title = document.createElement("span");
+			title.textContent = todo.title || "Untitled";
+			card.appendChild(title);
+
+			card.addEventListener("dragstart", (e) => {
+				e.dataTransfer.setData("application/todo-id", todo.id);
+				e.dataTransfer.effectAllowed = "copy";
+			});
+
+			listScroll.appendChild(card);
+		});
+	}
+	renderList();
+	listPanel.appendChild(listScroll);
+	splitView.appendChild(listPanel);
+
+	function getDateStr(d) { return d.toISOString().slice(0, 10); }
+
+	function buildDayColumn(dateStr, label) {
+		const col = document.createElement("div");
+		col.classList.add("timeline-day-col");
+
+		const dayLabel = document.createElement("div");
+		dayLabel.classList.add("timeline-day-label");
+		dayLabel.textContent = label;
+		col.appendChild(dayLabel);
+
+		for (let h = 0; h < 24; h++) {
+			const slot = document.createElement("div");
+			slot.classList.add("timeline-slot");
+			slot.dataset.date = dateStr;
+			slot.dataset.hour = h;
+
+			const slotLabel = document.createElement("span");
+			slotLabel.classList.add("timeline-slot-label");
+			slotLabel.textContent = `${String(h).padStart(2, "0")}:00`;
+			slot.appendChild(slotLabel);
+
+			// Show any scheduled todos in this slot
+			inProgressTodos.forEach(({ todo, project }) => {
+				const sched = todo.schedule?.[dateStr];
+				if (sched && h >= sched.startHour && h < sched.endHour) {
+					if (h === sched.startHour) {
+						const block = document.createElement("div");
+						block.classList.add("timeline-block");
+						block.style.height = `${(sched.endHour - sched.startHour) * 52 - 2}px`;
+						if (project?.code) {
+							const badge = document.createElement("span");
+							badge.classList.add("todo-number-badge");
+							badge.style.fontSize = "0.6rem";
+							badge.textContent = `${project.code}-${todo.number || ""}`;
+							block.appendChild(badge);
+						}
+						const blockTitle = document.createElement("span");
+						blockTitle.textContent = todo.title || "Untitled";
+						block.appendChild(blockTitle);
+
+						const removeBtn = document.createElement("button");
+						removeBtn.classList.add("timeline-block-remove");
+						removeBtn.textContent = "×";
+						removeBtn.addEventListener("click", (e) => {
+							e.stopPropagation();
+							delete todo.schedule[dateStr];
+							saveProjects();
+							rebuildTimeline();
+						});
+						block.appendChild(removeBtn);
+						slot.appendChild(block);
+					} else {
+						slot.classList.add("timeline-slot-occupied");
+					}
+				}
+			});
+
+			slot.addEventListener("dragover", (e) => { e.preventDefault(); slot.classList.add("timeline-slot-drag-over"); });
+			slot.addEventListener("dragleave", () => slot.classList.remove("timeline-slot-drag-over"));
+			slot.addEventListener("drop", (e) => {
+				e.preventDefault();
+				slot.classList.remove("timeline-slot-drag-over");
+				const todoId = e.dataTransfer.getData("application/todo-id");
+				const found = inProgressTodos.find(x => x.todo.id === todoId);
+				if (!found) return;
+				if (!found.todo.schedule) found.todo.schedule = {};
+				found.todo.schedule[dateStr] = { startHour: h, endHour: Math.min(h + 1, 24) };
+				saveProjects();
+				rebuildTimeline();
+			});
+
+			col.appendChild(slot);
+		}
+		return col;
+	}
+
+	function rebuildTimeline() {
+		timelinePanel.innerHTML = "";
+		if (viewMode === "day") {
+			const label = viewDate.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short" });
+			timelinePanel.appendChild(buildDayColumn(getDateStr(viewDate), label));
+		} else {
+			const weekGrid = document.createElement("div");
+			weekGrid.classList.add("timeline-week-grid");
+			for (let i = 0; i < 7; i++) {
+				const d = new Date(viewDate);
+				d.setDate(d.getDate() - d.getDay() + i);
+				const label = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric" });
+				weekGrid.appendChild(buildDayColumn(getDateStr(d), label));
+			}
+			timelinePanel.appendChild(weekGrid);
+		}
+	}
+
+	rebuildTimeline();
+	todoContainer.appendChild(outer);
 }
 
 function renderOverviewNotes() {
