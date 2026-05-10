@@ -32,7 +32,7 @@ sidebarBackdrop.addEventListener("click", () => {
 
 const projects = [];
 let currentProjectId = null;
-let currentView = "project"; // "project" | "inbox"
+let currentView = "overview"; // "project" | "inbox" | "overview"
 let currentProjectTab = "board"; // "board" | "resources"
 let inbox = [];
 
@@ -959,6 +959,7 @@ async function reloadFromSupabase() {
 	const savedProjectId = currentProjectId;
 	const savedView = currentView;
 	const savedTab = currentProjectTab;
+	const savedOverviewTab = overviewTab;
 	try {
 		await loadUserPrefs();
 		await loadFromSupabase();
@@ -968,8 +969,11 @@ async function reloadFromSupabase() {
 			currentProjectTab = savedTab;
 		}
 		currentView = savedView;
+		overviewTab = savedOverviewTab;
 		renderProjects();
-		renderTodos();
+		if (currentView === "inbox") renderInbox();
+		else if (currentView === "overview") renderOverview();
+		else renderTodos();
 	} catch (err) {
 		console.error("Failed to reload from Supabase:", err);
 	} finally {
@@ -990,6 +994,80 @@ window.addEventListener("focus", () => {
 setInterval(() => {
 	if (document.visibilityState === "visible" && currentUser) reloadFromSupabase();
 }, 30_000);
+
+/* ======================
+   URL ROUTING
+====================== */
+
+function getProjectSlug(project) {
+	return (project.code || "").toLowerCase().replace(/[^a-z0-9]/g, "-") ||
+		project.id.slice(0, 8);
+}
+
+function getTabSlug(project) {
+	if (!project || currentProjectTab === "board") return null;
+	const tab = project.tabs?.find(t => t.id === currentProjectTab);
+	if (!tab) return null;
+	return tab.type === "stack" ? "tools" : tab.type;
+}
+
+function pushViewUrl() {
+	let path;
+	if (currentView === "overview") {
+		if (overviewTab === "assistant") path = "/assistant";
+		else if (overviewTab === "dashboard") path = "/overview";
+		else path = `/overview/${overviewTab}`;
+	} else if (currentView === "inbox") {
+		path = "/inbox";
+	} else {
+		const project = getCurrentProject();
+		if (!project) {
+			path = "/overview";
+		} else {
+			const slug = getProjectSlug(project);
+			const tabSlug = getTabSlug(project);
+			path = tabSlug ? `/${slug}/${tabSlug}` : `/${slug}`;
+		}
+	}
+	if (window.location.pathname !== path) history.pushState({}, "", path);
+}
+
+function navigateToPath(pathname) {
+	const parts = pathname.replace(/^\//, "").split("/").filter(Boolean);
+	if (!parts.length || parts[0] === "overview") {
+		currentView = "overview";
+		overviewTab = parts[1] || "dashboard";
+	} else if (parts[0] === "assistant") {
+		currentView = "overview";
+		overviewTab = "assistant";
+	} else if (parts[0] === "inbox") {
+		currentView = "inbox";
+	} else {
+		const project = projects.find(p => getProjectSlug(p) === parts[0]);
+		if (project) {
+			currentProjectId = project.id;
+			currentView = "project";
+			if (parts[1] && parts[1] !== "board") {
+				const tabType = parts[1] === "tools" ? "stack" : parts[1];
+				const tab = project.tabs?.find(t => t.type === tabType);
+				currentProjectTab = tab ? tab.id : "board";
+			} else {
+				currentProjectTab = "board";
+			}
+		} else {
+			currentView = "overview";
+			overviewTab = "dashboard";
+		}
+	}
+}
+
+window.addEventListener("popstate", () => {
+	navigateToPath(window.location.pathname);
+	renderProjects();
+	if (currentView === "inbox") renderInbox();
+	else if (currentView === "overview") renderOverview();
+	else renderTodos();
+});
 
 /* ======================
    INIT
@@ -1022,8 +1100,12 @@ supabase.auth.getSession().then(async ({ data: { session } }) => {
 		}
 	}
 
+	// Navigate to URL path, defaulting to overview
+	navigateToPath(window.location.pathname);
 	renderProjects();
-	renderTodos();
+	if (currentView === "inbox") renderInbox();
+	else if (currentView === "overview") renderOverview();
+	else renderTodos();
 });
 
 /* ======================
@@ -2149,6 +2231,7 @@ function buildProjectTabBar(project) {
 		if (currentProjectTab === tab.id) btn.classList.add("active");
 		btn.addEventListener("click", () => {
 			currentProjectTab = tab.id;
+			pushViewUrl();
 			renderTodos();
 		});
 		item.appendChild(btn);
@@ -4066,6 +4149,7 @@ function renderOverview() {
 		btn.textContent = label;
 		btn.addEventListener("click", () => {
 			overviewTab = id;
+			pushViewUrl();
 			renderOverview();
 		});
 		tabBar.appendChild(btn);
@@ -5837,6 +5921,7 @@ function renderProjects() {
 		selectedTodos.clear();
 		sidebar.classList.remove("open");
 		sidebarBackdrop.classList.remove("visible");
+		pushViewUrl();
 		renderProjects();
 		renderOverview();
 	});
@@ -5855,6 +5940,7 @@ function renderProjects() {
 		selectedTodos.clear();
 		sidebar.classList.remove("open");
 		sidebarBackdrop.classList.remove("visible");
+		pushViewUrl();
 		renderProjects();
 		renderOverview();
 	});
@@ -5886,6 +5972,7 @@ function renderProjects() {
 		selectedTodos.clear();
 		sidebar.classList.remove("open");
 		sidebarBackdrop.classList.remove("visible");
+		pushViewUrl();
 		renderProjects();
 		renderInbox();
 	});
@@ -6096,6 +6183,7 @@ function renderProjects() {
 			currentProjectTab = "board";
 			searchQuery = "";
 			selectedTodos.clear();
+			pushViewUrl();
 			renderTodos();
 			renderProjects();
 			saveProjects();
