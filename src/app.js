@@ -3817,6 +3817,8 @@ function renderInbox() {
 	todoContainer.classList.remove("swimlane-mode");
 	todoContainer.classList.remove("overview-view");
 	document.querySelector("#main").style.removeProperty("--palette-dark");
+	document.querySelector("#fab-btn").style.background = "";
+	document.querySelector("#fab-btn").style.boxShadow = "";
 	projectTitle.style.color = "";
 	projectCodeBadge.style.color = "";
 	projectCodeBadge.style.background = "";
@@ -4032,6 +4034,8 @@ function renderOverview() {
 	projectCodeBadge.style.display = "none";
 	sortBarContainer.innerHTML = "";
 	document.querySelector("#main").style.removeProperty("--palette-dark");
+	document.querySelector("#fab-btn").style.background = "";
+	document.querySelector("#fab-btn").style.boxShadow = "";
 	projectTitle.style.color = "";
 
 	if (overviewTab === "assistant") {
@@ -5616,14 +5620,19 @@ function renderTodos() {
 
 	// Apply project colour to header elements + --palette-dark for the rest of #main
 	const mainEl = document.querySelector("#main");
+	const fabBtn = document.querySelector("#fab-btn");
 	if (project.color) {
 		mainEl.style.setProperty("--palette-dark", project.color);
 		projectTitle.style.color = project.color;
 		titleIcon.style.color = project.color;
+		fabBtn.style.background = project.color;
+		fabBtn.style.boxShadow = `0 4px 16px ${project.color}59`;
 	} else {
 		mainEl.style.removeProperty("--palette-dark");
 		projectTitle.style.color = "";
 		titleIcon.style.color = "";
+		fabBtn.style.background = "";
+		fabBtn.style.boxShadow = "";
 	}
 
 	// Code badge — use onclick (single handler, no accumulation)
