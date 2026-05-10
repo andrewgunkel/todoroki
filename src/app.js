@@ -2129,7 +2129,7 @@ function showEpicAddForm(epicId) {
 
 const TAB_TYPE_OPTIONS = [
 	{ type: "notes", label: "Notes" },
-	{ type: "stack", label: "Stack" },
+	{ type: "stack", label: "Tools" },
 ];
 
 function buildProjectTabBar(project) {
@@ -3002,7 +3002,7 @@ function renderStackTab(project) {
 
 	const title = document.createElement("h3");
 	title.style.cssText = "font-size:1rem;font-weight:700;color:var(--palette-dark);margin:0;";
-	title.textContent = "Stack";
+	title.textContent = "Tools";
 
 	const addBtn = document.createElement("button");
 	addBtn.classList.add("stack-add-btn");
@@ -3816,6 +3816,11 @@ function renderInbox() {
 	todoContainer.innerHTML = "";
 	todoContainer.classList.remove("swimlane-mode");
 	todoContainer.classList.remove("overview-view");
+	document.querySelector("#main").style.removeProperty("--palette-dark");
+	projectTitle.style.color = "";
+	projectCodeBadge.style.color = "";
+	projectCodeBadge.style.background = "";
+	projectCodeBadge.style.borderColor = "";
 	projectTitle.textContent = "Inbox";
 	setViewHeaderIcon("inbox", true);
 	projectCodeBadge.style.display = "none";
@@ -4026,6 +4031,8 @@ function renderOverview() {
 	todoContainer.classList.add("overview-view");
 	projectCodeBadge.style.display = "none";
 	sortBarContainer.innerHTML = "";
+	document.querySelector("#main").style.removeProperty("--palette-dark");
+	projectTitle.style.color = "";
 
 	if (overviewTab === "assistant") {
 		projectTabsContainer.innerHTML = "";
@@ -5093,13 +5100,43 @@ function renderOverviewInProgress() {
 			const label = viewDate.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short" });
 			timelinePanel.appendChild(buildDayColumn(getDateStr(viewDate), label));
 		} else {
+			// Week navigation header
+			const weekNavRow = document.createElement("div");
+			weekNavRow.classList.add("week-nav-row");
+
+			const prevBtn = document.createElement("button");
+			prevBtn.classList.add("week-nav-btn");
+			prevBtn.innerHTML = "&#8249;";
+			prevBtn.title = "Previous week";
+			prevBtn.addEventListener("click", () => { viewDate.setDate(viewDate.getDate() - 7); rebuildTimeline(); });
+
+			const nextBtn = document.createElement("button");
+			nextBtn.classList.add("week-nav-btn");
+			nextBtn.innerHTML = "&#8250;";
+			nextBtn.title = "Next week";
+			nextBtn.addEventListener("click", () => { viewDate.setDate(viewDate.getDate() + 7); rebuildTimeline(); });
+
+			const weekSunday = new Date(viewDate);
+			weekSunday.setDate(weekSunday.getDate() - weekSunday.getDay());
+			const weekSaturday = new Date(weekSunday);
+			weekSaturday.setDate(weekSaturday.getDate() + 6);
+			const weekLabelEl = document.createElement("span");
+			weekLabelEl.classList.add("week-nav-label");
+			weekLabelEl.textContent = `${weekSunday.toLocaleDateString("en-GB", { day: "numeric", month: "short" })} – ${weekSaturday.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}`;
+
+			weekNavRow.append(prevBtn, weekLabelEl, nextBtn);
+			timelinePanel.appendChild(weekNavRow);
+
 			const weekGrid = document.createElement("div");
 			weekGrid.classList.add("timeline-week-grid");
 			for (let i = 0; i < 7; i++) {
-				const d = new Date(viewDate);
-				d.setDate(d.getDate() - d.getDay() + i);
+				const d = new Date(weekSunday);
+				d.setDate(weekSunday.getDate() + i);
+				const isToday = getDateStr(d) === todayStr;
 				const label = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric" });
-				weekGrid.appendChild(buildDayColumn(getDateStr(d), label));
+				const col = buildDayColumn(getDateStr(d), label);
+				if (isToday) col.classList.add("timeline-col--today");
+				weekGrid.appendChild(col);
 			}
 			timelinePanel.appendChild(weekGrid);
 		}
@@ -5577,10 +5614,31 @@ function renderTodos() {
 
 	projectTitle.textContent = project.title;
 
+	// Apply project colour to header elements + --palette-dark for the rest of #main
+	const mainEl = document.querySelector("#main");
+	if (project.color) {
+		mainEl.style.setProperty("--palette-dark", project.color);
+		projectTitle.style.color = project.color;
+		titleIcon.style.color = project.color;
+	} else {
+		mainEl.style.removeProperty("--palette-dark");
+		projectTitle.style.color = "";
+		titleIcon.style.color = "";
+	}
+
 	// Code badge — use onclick (single handler, no accumulation)
 	if (!project.code) project.code = generateProjectCode(project.title);
 	projectCodeBadge.textContent = project.code;
 	projectCodeBadge.style.display = "";
+	if (project.color) {
+		projectCodeBadge.style.color = project.color;
+		projectCodeBadge.style.background = project.color + "1a";
+		projectCodeBadge.style.borderColor = project.color + "33";
+	} else {
+		projectCodeBadge.style.color = "";
+		projectCodeBadge.style.background = "";
+		projectCodeBadge.style.borderColor = "";
+	}
 	projectCodeBadge.onclick = () => {
 		projectCodeBadge.style.display = "none";
 		const input = document.createElement("input");
@@ -6094,21 +6152,7 @@ function getAvatarColor() {
 function buildUserAvatar(user, sizeClass) {
 	const avatar = document.createElement("div");
 	avatar.classList.add(sizeClass);
-	const color = getAvatarColor();
-	const hasCustomColor = userPrefs.avatarColor !== null;
-
-	if (!hasCustomColor && user.user_metadata?.avatar_url) {
-		// Show Google photo only when no custom colour chosen
-		const img = document.createElement("img");
-		img.src = user.user_metadata.avatar_url;
-		img.alt = "";
-		img.classList.add("sidebar-user-avatar-img");
-		avatar.appendChild(img);
-	} else {
-		avatar.style.background = color;
-		avatar.style.color = color === "#FCFF4B" ? "#044389" : "#fff";
-		avatar.textContent = (getUserDisplayName(user)[0] || "?").toUpperCase();
-	}
+	avatar.style.background = getAvatarColor();
 	return avatar;
 }
 
@@ -6204,7 +6248,7 @@ function openUserSettings(anchorEl, user) {
 	colorSection.classList.add("user-settings-section");
 	const colorLabel = document.createElement("label");
 	colorLabel.classList.add("user-settings-label");
-	colorLabel.textContent = "Icon colour";
+	colorLabel.textContent = "Profile icon colour";
 	const swatches = document.createElement("div");
 	swatches.classList.add("user-settings-swatches");
 

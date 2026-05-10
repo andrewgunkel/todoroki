@@ -5019,9 +5019,48 @@ textarea.modal-form-input {
     background: var(--md-card-surface);
 }
 
+.week-nav-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--md-field-border);
+    flex-shrink: 0;
+}
+.week-nav-btn {
+    background: none;
+    border: 1px solid var(--md-border-color);
+    border-radius: 6px;
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 1.1rem;
+    color: var(--md-text-color);
+    line-height: 1;
+    transition: background 0.15s;
+}
+.week-nav-btn:hover { background: var(--md-chip-bg); }
+.week-nav-label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--md-text-color);
+    flex: 1;
+    text-align: center;
+    white-space: nowrap;
+}
 .timeline-week-grid {
     display: flex;
-    height: 100%;
+    flex: 1;
+    min-height: 0;
+}
+.timeline-col--today .timeline-day-label {
+    color: var(--palette-dark);
+}
+.timeline-col--today {
+    background: rgba(99, 102, 241, 0.03);
 }
 
 .timeline-day-col {
