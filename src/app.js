@@ -1927,7 +1927,42 @@ function buildTodoCard(todo, ctx) {
    INBOX ADD FORM
 ====================== */
 
-function showInboxAddForm() {
+function showContextAddForm() {
+	const project = currentView === "project" ? getCurrentProject() : null;
+	const activeTab = project?.tabs?.find(t => t.id === currentProjectTab);
+	const isNotesTab = (activeTab?.type === "notes") ||
+	                   (currentView === "overview" && overviewTab === "notes");
+
+	if (isNotesTab) {
+		const note = {
+			id: self.crypto.randomUUID(),
+			content: "", html: "", tags: [], category: "",
+			createdAt: Date.now(), updatedAt: Date.now(),
+		};
+		if (project) {
+			project.notes.unshift(note);
+			saveProjects();
+		} else {
+			userPrefs.generalNotes.unshift(note);
+			saveUserPrefs();
+		}
+		renderTodos();
+		showUndoToast("Note created", () => {
+			if (project) {
+				project.notes = project.notes.filter(n => n.id !== note.id);
+				saveProjects();
+				if (currentView === "project") renderTodos();
+			} else {
+				userPrefs.generalNotes = userPrefs.generalNotes.filter(n => n.id !== note.id);
+				saveUserPrefs();
+				if (currentView === "overview") renderOverview();
+			}
+		});
+		return;
+	}
+
+	const btnLabel = project ? `Add to ${project.title}` : "Add to Inbox";
+
 	const overlay = document.createElement("div");
 	overlay.classList.add("modal-overlay");
 	overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
@@ -1941,7 +1976,7 @@ function showInboxAddForm() {
 
 	const heading = document.createElement("h2");
 	heading.classList.add("modal-title");
-	heading.textContent = "Add to Inbox";
+	heading.textContent = btnLabel;
 
 	const titleInput = document.createElement("input");
 	titleInput.type = "text";
@@ -1965,33 +2000,52 @@ function showInboxAddForm() {
 	dueDateInput.type = "date";
 	dueDateInput.classList.add("modal-form-input");
 
-	// Tags input for inbox add
-	const inboxTagsInput = document.createElement("input");
-	inboxTagsInput.type = "text";
-	inboxTagsInput.placeholder = "Tags (comma-separated, e.g. urgent, bug)";
-	inboxTagsInput.classList.add("modal-form-input");
+	const tagsInput = document.createElement("input");
+	tagsInput.type = "text";
+	tagsInput.placeholder = "Tags (comma-separated, e.g. urgent, bug)";
+	tagsInput.classList.add("modal-form-input");
 
 	const addBtn = document.createElement("button");
 	addBtn.classList.add("modal-btn-primary");
-	addBtn.textContent = "Add to Inbox";
+	addBtn.textContent = btnLabel;
 
 	addBtn.addEventListener("click", () => {
 		const title = titleInput.value.trim();
 		if (!title) { titleInput.focus(); return; }
 		const todo = new Todo(
-			title,
-			descInput.value,
-			dueDateInput.value,
-			prioritySelect.value,
+			title, descInput.value, dueDateInput.value, prioritySelect.value,
 			"", [], "", getColumnLabels()[0] || ""
 		);
 		todo.epicId = null;
-		todo.tags = inboxTagsInput.value.split(",").map(t => t.trim().toLowerCase()).filter(Boolean);
-		inbox.push(todo);
-		saveInbox();
-		if (currentView === "inbox") renderInbox();
+		todo.tags = tagsInput.value.split(",").map(t => t.trim().toLowerCase()).filter(Boolean);
+
+		if (project) {
+			project.todos.push(todo);
+			saveProjects();
+			if (currentView === "project") renderTodos();
+		} else {
+			inbox.push(todo);
+			saveInbox();
+			if (currentView === "inbox") renderInbox();
+		}
 		overlay.remove();
+
+		const dest = project ? project.title : "Inbox";
+		showUndoToast(`Todo added to ${dest}`, () => {
+			if (project) {
+				project.todos = project.todos.filter(t => t.id !== todo.id);
+				saveProjects();
+				if (currentView === "project") renderTodos();
+			} else {
+				const idx = inbox.indexOf(todo);
+				if (idx !== -1) inbox.splice(idx, 1);
+				saveInbox();
+				if (currentView === "inbox") renderInbox();
+			}
+		});
 	});
+
+	titleInput.addEventListener("keydown", (e) => { if (e.key === "Enter") addBtn.click(); });
 
 	modal.appendChild(closeBtn);
 	modal.appendChild(heading);
@@ -1999,7 +2053,7 @@ function showInboxAddForm() {
 	modal.appendChild(makeField("Description", descInput));
 	modal.appendChild(makeField("Priority", prioritySelect));
 	modal.appendChild(makeField("Due Date", dueDateInput));
-	modal.appendChild(makeField("Tags", inboxTagsInput));
+	modal.appendChild(makeField("Tags", tagsInput));
 	modal.appendChild(addBtn);
 	overlay.appendChild(modal);
 	document.body.appendChild(overlay);
@@ -5500,21 +5554,22 @@ function renderTodos() {
 		lastEpicFilterProjectId = currentProjectId;
 	}
 
-	addTodoBtn.style.display = "";
 	todoContainer.innerHTML = "";
 	todoContainer.classList.remove("swimlane-mode");
 	todoContainer.classList.remove("overview-view");
 
-	// Project icon in title wrap
+	// Project icon in title wrap — always reset classes so setViewHeaderIcon changes don't linger
 	const titleWrap = document.querySelector("#project-title-wrap");
 	let titleIcon = titleWrap.querySelector(".project-title-icon");
 	if (!titleIcon) {
 		titleIcon = document.createElement("span");
-		titleIcon.classList.add("material-symbols-rounded", "project-title-icon");
 		titleWrap.insertBefore(titleIcon, projectTitle);
 	}
+	titleIcon.className = "material-symbols-rounded project-title-icon";
+	titleIcon.style.cursor = "pointer";
 	titleIcon.textContent = project.icon || "folder";
 	titleIcon.style.display = project.icon ? "" : "none";
+	titleIcon.onclick = null;
 	titleIcon.addEventListener("click", (e) => {
 		e.stopPropagation();
 		openIconPicker(project, titleIcon, () => { renderTodos(); });
@@ -6213,40 +6268,77 @@ function openUserSettings(anchorEl, user) {
 	themeSection.appendChild(themeRow);
 	popup.appendChild(themeSection);
 
-	// ── AI / API Key ──
+	// ── AI / API Key (collapsed by default) ──
 	const apiSection = document.createElement("div");
 	apiSection.classList.add("user-settings-section");
-	const apiLabel = document.createElement("label");
+
+	const apiHeaderRow = document.createElement("div");
+	apiHeaderRow.classList.add("user-settings-api-header");
+
+	const apiLabel = document.createElement("span");
 	apiLabel.classList.add("user-settings-label");
+	apiLabel.style.margin = "0";
 	apiLabel.textContent = "Anthropic API Key";
+
+	const apiStatusBadge = document.createElement("span");
+	apiStatusBadge.classList.add("user-settings-api-badge");
+	apiStatusBadge.textContent = userPrefs.anthropicApiKey ? "✓ Set" : "Not set";
+	apiStatusBadge.classList.toggle("user-settings-api-badge--set", !!userPrefs.anthropicApiKey);
+
+	const apiEditBtn = document.createElement("button");
+	apiEditBtn.classList.add("user-settings-api-edit-btn");
+	apiEditBtn.textContent = "Edit";
+
+	apiHeaderRow.append(apiLabel, apiStatusBadge, apiEditBtn);
+	apiSection.appendChild(apiHeaderRow);
+
+	const apiExpandArea = document.createElement("div");
+	apiExpandArea.classList.add("user-settings-api-expand");
+	apiExpandArea.style.display = "none";
+
 	const apiDesc = document.createElement("p");
 	apiDesc.classList.add("user-settings-api-desc");
-	apiDesc.textContent = "Powers AI features. Your key is stored in your account and never shared.";
+	apiDesc.textContent = "Powers AI features. Stored securely in your account, never shared.";
+
 	const apiRow = document.createElement("div");
 	apiRow.classList.add("user-settings-api-row");
+
 	const apiInput = document.createElement("input");
 	apiInput.type = "password";
 	apiInput.classList.add("user-settings-input");
 	apiInput.placeholder = "sk-ant-…";
 	apiInput.value = userPrefs.anthropicApiKey || "";
 	apiInput.autocomplete = "off";
+
 	const apiSaveBtn = document.createElement("button");
 	apiSaveBtn.classList.add("user-settings-api-save");
 	apiSaveBtn.textContent = "Save";
+
 	const apiStatus = document.createElement("span");
 	apiStatus.classList.add("user-settings-api-status");
-	apiStatus.textContent = userPrefs.anthropicApiKey ? "✓ Key saved" : "";
+
 	apiSaveBtn.addEventListener("click", async () => {
 		const key = apiInput.value.trim();
 		userPrefs.anthropicApiKey = key || null;
 		await saveUserPrefs();
-		apiStatus.textContent = key ? "✓ Key saved" : "Key removed";
-		apiStatus.style.color = key ? "var(--md-status-completed-color)" : "var(--md-label-color)";
-		setTimeout(() => { if (apiStatus.textContent.includes("removed")) apiStatus.textContent = ""; }, 2000);
+		apiStatus.textContent = key ? "✓ Saved" : "Removed";
+		apiStatusBadge.textContent = key ? "✓ Set" : "Not set";
+		apiStatusBadge.classList.toggle("user-settings-api-badge--set", !!key);
+		setTimeout(() => { apiStatus.textContent = ""; }, 2000);
 	});
 	apiInput.addEventListener("keydown", (e) => { if (e.key === "Enter") apiSaveBtn.click(); });
+
+	apiEditBtn.addEventListener("click", (e) => {
+		e.stopPropagation();
+		const open = apiExpandArea.style.display !== "none";
+		apiExpandArea.style.display = open ? "none" : "";
+		apiEditBtn.textContent = open ? "Edit" : "Done";
+		if (!open) requestAnimationFrame(() => apiInput.focus());
+	});
+
 	apiRow.append(apiInput, apiSaveBtn);
-	apiSection.append(apiLabel, apiDesc, apiRow, apiStatus);
+	apiExpandArea.append(apiDesc, apiRow, apiStatus);
+	apiSection.appendChild(apiExpandArea);
 	popup.appendChild(apiSection);
 
 	// ── Divider ──
@@ -6300,18 +6392,7 @@ function applyTheme(theme) {
 
 applyTheme(localStorage.getItem("theme") || "light");
 
-addTodoBtn.addEventListener("click", () => {
-	createTodoForm(
-		formContainer,
-		addTodoBtn,
-		getCurrentProject(),
-		saveProjects,
-		renderTodos,
-		getColumnLabels()
-	);
-});
-
-document.querySelector("#fab-btn").addEventListener("click", () => showInboxAddForm());
+document.querySelector("#fab-btn").addEventListener("click", () => showContextAddForm());
 
 document.addEventListener("click", (e) => {
 	if (!e.target.closest(".todo-card") && !e.target.closest(".selection-bar-overlay")) {
