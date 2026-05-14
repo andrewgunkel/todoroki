@@ -52,10 +52,25 @@ function buildAuthScreen() {
 		signInWithGoogle();
 	});
 
+	// Guest / local-only mode
+	const divider = document.createElement("div");
+	divider.id = "auth-divider";
+	divider.textContent = "or";
+
+	const guestBtn = document.createElement("button");
+	guestBtn.id = "auth-guest-btn";
+	guestBtn.textContent = "Continue as Guest";
+	guestBtn.addEventListener("click", () => {
+		localStorage.setItem("todoroki_guest", "true");
+		showApp();
+	});
+
 	card.appendChild(icon);
 	card.appendChild(title);
 	card.appendChild(subtitle);
 	card.appendChild(googleBtn);
+	card.appendChild(divider);
+	card.appendChild(guestBtn);
 	screen.appendChild(card);
 	return screen;
 }

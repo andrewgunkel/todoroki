@@ -42,6 +42,7 @@ let sortBy = "default"; // default | priority | createdAt | updatedAt | dueDate
 let sortDir = "asc"; // asc | desc
 
 let currentUser = null;
+const guestMode = !!(localStorage.getItem("todoroki_guest") === "true");
 
 let selectedTodos = new Set(); // set of todo IDs currently selected
 let dragState = null; // { todoIds, source: "project"|"inbox", projectId }
@@ -542,20 +543,64 @@ let columns = [
 ====================== */
 
 // Debounced entry points — all 80+ call sites remain unchanged
+function saveToLocalStorage() {
+	try {
+		localStorage.setItem("todoroki_guest_projects", JSON.stringify(projects));
+		localStorage.setItem("todoroki_guest_inbox", JSON.stringify(inbox));
+		localStorage.setItem("todoroki_guest_columns", JSON.stringify(columns));
+	} catch (e) {
+		console.error("localStorage save failed:", e);
+	}
+}
+
+function loadFromLocalStorage() {
+	try {
+		const rawCols = localStorage.getItem("todoroki_guest_columns");
+		if (rawCols) columns = JSON.parse(rawCols);
+
+		const rawProjects = localStorage.getItem("todoroki_guest_projects");
+		if (rawProjects) {
+			const parsed = JSON.parse(rawProjects);
+			projects.length = 0;
+			parsed.forEach(raw => {
+				const project = Object.create(Project.prototype);
+				Object.assign(project, raw);
+				project.todos = (raw.todos || []).slice();
+				projects.push(project);
+			});
+		}
+
+		const rawInbox = localStorage.getItem("todoroki_guest_inbox");
+		if (rawInbox) {
+			inbox.length = 0;
+			inbox.push(...JSON.parse(rawInbox));
+		}
+
+		userPrefs.theme        = localStorage.getItem("theme") || "light";
+		userPrefs.displayName  = localStorage.getItem("todoroki_guest_name") || "";
+		userPrefs.avatarColor  = localStorage.getItem("userAvatarColor") || null;
+	} catch (e) {
+		console.error("localStorage load failed:", e);
+	}
+}
+
 function saveProjects() {
-	if (!currentUser) return;
+	if (!currentUser && !guestMode) return;
+	if (guestMode) { saveToLocalStorage(); return; }
 	clearTimeout(syncTimer);
 	syncTimer = setTimeout(syncAllToSupabase, 400);
 }
 
 function saveInbox() {
-	if (!currentUser) return;
+	if (!currentUser && !guestMode) return;
+	if (guestMode) { saveToLocalStorage(); return; }
 	clearTimeout(syncTimer);
 	syncTimer = setTimeout(syncAllToSupabase, 400);
 }
 
 function saveColumns() {
-	if (!currentUser) return;
+	if (!currentUser && !guestMode) return;
+	if (guestMode) { saveToLocalStorage(); return; }
 	syncColumnsToSupabase();
 }
 
@@ -588,6 +633,12 @@ async function loadUserPrefs() {
 }
 
 async function saveUserPrefs() {
+	if (guestMode) {
+		localStorage.setItem("todoroki_guest_name", userPrefs.displayName || "");
+		localStorage.setItem("theme", userPrefs.theme || "light");
+		if (userPrefs.avatarColor) localStorage.setItem("userAvatarColor", userPrefs.avatarColor);
+		return;
+	}
 	if (!currentUser) return;
 	try {
 		let { error } = await supabase.from("user_preferences").upsert(
@@ -974,7 +1025,7 @@ async function loadFromSupabase() {
 			description:    row.description,
 			sort_order:     row.sort_order,
 			epics:          row.epics || [],
-			resources:      row.resources || { notes: "" },
+			resources:      { files: [], ...(row.resources || { notes: "" }) },
 			noEpicCollapsed: row.no_epic_collapsed || false,
 			code:           row.code || generateProjectCode(row.title),
 			todoCounter:    row.todo_counter || 0,
@@ -1170,7 +1221,7 @@ supabase.auth.getSession().then(async ({ data: { session } }) => {
 		if (projects.length === 0) {
 			const defaultProject = new Project("Default", "");
 			defaultProject.epics       = [];
-			defaultProject.resources   = { notes: "" };
+			defaultProject.resources   = { notes: "", html: "", files: [] };
 			defaultProject.code        = "DEF";
 			defaultProject.todoCounter = 0;
 			defaultProject.tabs        = defaultProjectTabs();
@@ -1180,6 +1231,24 @@ supabase.auth.getSession().then(async ({ data: { session } }) => {
 			projects.push(defaultProject);
 			currentProjectId = defaultProject.id;
 			saveProjects();
+		}
+	} else if (guestMode) {
+		loadFromLocalStorage();
+		applyTheme(userPrefs.theme);
+
+		if (projects.length === 0) {
+			const defaultProject = new Project("My Project", "");
+			defaultProject.epics       = [];
+			defaultProject.resources   = { notes: "", html: "", files: [] };
+			defaultProject.code        = "PRJ";
+			defaultProject.todoCounter = 0;
+			defaultProject.tabs        = defaultProjectTabs();
+			defaultProject.notes       = [];
+			defaultProject.tools       = [];
+			defaultProject.lists       = [];
+			projects.push(defaultProject);
+			currentProjectId = defaultProject.id;
+			saveToLocalStorage();
 		}
 	}
 
@@ -1277,7 +1346,7 @@ function addProject(title) {
 	project.epics       = [];
 	project.icon        = "";
 	project.color       = null;
-	project.resources   = { notes: "" };
+	project.resources   = { notes: "", html: "", files: [] };
 	project.code        = generateProjectCode(title.trim());
 	project.todoCounter = 0;
 	project.tabs        = defaultProjectTabs();
@@ -2413,15 +2482,172 @@ function buildProjectTabBar(project) {
 }
 
 function renderResourcesPanel(project) {
-	if (!project.resources) project.resources = { notes: "", html: "" };
+	if (!project.resources) project.resources = { notes: "", html: "", files: [] };
+	if (!project.resources.files) project.resources.files = [];
 
 	const panel = document.createElement("div");
 	panel.classList.add("resources-panel");
 
+	// ── File Archive Section ────────────────────────────────
+	const archiveSection = document.createElement("div");
+	archiveSection.classList.add("resources-archive");
+
+	const archiveHeader = document.createElement("div");
+	archiveHeader.classList.add("resources-archive-header");
+	const folderIcon = document.createElement("span");
+	folderIcon.classList.add("material-symbols-rounded");
+	folderIcon.style.fontSize = "0.95rem";
+	folderIcon.textContent = "folder";
+	archiveHeader.appendChild(folderIcon);
+	archiveHeader.appendChild(document.createTextNode(" Files"));
+	archiveSection.appendChild(archiveHeader);
+
+	if (!currentUser && !guestMode) {
+		// Not logged in, not guest — shouldn't normally happen
+		const msg = document.createElement("p");
+		msg.classList.add("resources-guest-msg");
+		msg.textContent = "Log in to upload files.";
+		archiveSection.appendChild(msg);
+	} else if (guestMode) {
+		const msg = document.createElement("div");
+		msg.classList.add("resources-guest-msg");
+		msg.innerHTML = '<span class="material-symbols-rounded" style="font-size:1rem">lock</span> File uploads require an account.';
+		const loginBtn = document.createElement("button");
+		loginBtn.classList.add("resources-guest-login");
+		loginBtn.textContent = "Log in";
+		loginBtn.addEventListener("click", () => {
+			localStorage.removeItem("todoroki_guest");
+			window.location.reload();
+		});
+		msg.appendChild(loginBtn);
+		archiveSection.appendChild(msg);
+	} else {
+		// Logged-in: drag-and-drop upload zone
+		const fileInput = document.createElement("input");
+		fileInput.type = "file";
+		fileInput.multiple = true;
+		fileInput.style.display = "none";
+		fileInput.accept = "image/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.zip";
+		panel.appendChild(fileInput);
+
+		const dropZone = document.createElement("div");
+		dropZone.classList.add("resources-dropzone");
+		const uploadIcon = document.createElement("span");
+		uploadIcon.classList.add("material-symbols-rounded");
+		uploadIcon.style.fontSize = "1.6rem";
+		uploadIcon.textContent = "upload_file";
+		dropZone.appendChild(uploadIcon);
+		dropZone.appendChild(document.createTextNode("Drag files here or click to upload"));
+		dropZone.addEventListener("click", () => fileInput.click());
+		dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.classList.add("drag-over"); });
+		dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
+		dropZone.addEventListener("drop", (e) => {
+			e.preventDefault();
+			dropZone.classList.remove("drag-over");
+			handleFiles([...e.dataTransfer.files]);
+		});
+		fileInput.addEventListener("change", () => {
+			handleFiles([...fileInput.files]);
+			fileInput.value = "";
+		});
+		archiveSection.appendChild(dropZone);
+
+		const fileGrid = document.createElement("div");
+		fileGrid.classList.add("resources-file-grid");
+		archiveSection.appendChild(fileGrid);
+
+		async function handleFiles(files) {
+			for (const file of files) {
+				await uploadFile(file);
+			}
+		}
+
+		async function uploadFile(file) {
+			const fileId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+			const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+			const path = `${currentUser.id}/${project.id}/${fileId}_${safeName}`;
+			dropZone.style.opacity = "0.5";
+			const { error } = await supabase.storage.from("resources").upload(path, file);
+			dropZone.style.opacity = "";
+			if (error) {
+				console.error("Upload failed:", error);
+				alert("Upload failed: " + (error.message || "unknown error"));
+				return;
+			}
+			project.resources.files.push({
+				id: fileId,
+				name: file.name,
+				type: file.type,
+				size: file.size,
+				path,
+				uploadedAt: new Date().toISOString(),
+			});
+			saveProjects();
+			renderFileGrid();
+		}
+
+		async function renderFileGrid() {
+			fileGrid.innerHTML = "";
+			if (!project.resources.files.length) return;
+			for (const file of [...project.resources.files]) {
+				const card = document.createElement("div");
+				card.classList.add("resources-file-card");
+
+				if (file.type?.startsWith("image/")) {
+					const img = document.createElement("img");
+					img.classList.add("resources-file-preview");
+					img.alt = file.name;
+					if (file.path) {
+						supabase.storage.from("resources").createSignedUrl(file.path, 3600).then(({ data }) => {
+							if (data) img.src = data.signedUrl;
+						});
+					}
+					card.appendChild(img);
+					card.addEventListener("click", () => { if (img.src) window.open(img.src, "_blank"); });
+				} else {
+					const iconEl = document.createElement("span");
+					iconEl.classList.add("material-symbols-rounded", "resources-file-icon");
+					iconEl.textContent = file.type === "application/pdf" ? "picture_as_pdf" : "description";
+					card.appendChild(iconEl);
+					card.addEventListener("click", () => {
+						supabase.storage.from("resources").createSignedUrl(file.path, 3600).then(({ data }) => {
+							if (data) window.open(data.signedUrl, "_blank");
+						});
+					});
+				}
+
+				const nameEl = document.createElement("div");
+				nameEl.classList.add("resources-file-name");
+				nameEl.textContent = file.name;
+				nameEl.title = file.name;
+
+				const delBtn = document.createElement("button");
+				delBtn.classList.add("resources-file-delete");
+				delBtn.title = "Remove file";
+				delBtn.innerHTML = '<span class="material-symbols-rounded" style="font-size:0.85rem;line-height:1">close</span>';
+				delBtn.addEventListener("click", async (e) => {
+					e.stopPropagation();
+					if (file.path) await supabase.storage.from("resources").remove([file.path]);
+					project.resources.files = project.resources.files.filter(f => f.id !== file.id);
+					saveProjects();
+					renderFileGrid();
+				});
+
+				card.appendChild(nameEl);
+				card.appendChild(delBtn);
+				fileGrid.appendChild(card);
+			}
+		}
+
+		renderFileGrid();
+	}
+
+	panel.appendChild(archiveSection);
+
+	// ── Notes Section ───────────────────────────────────────
 	const wrap = document.createElement("div");
 	wrap.classList.add("resources-editor-wrap");
 
-	// Header row: label + format toggle
 	const header = document.createElement("div");
 	header.classList.add("resources-editor-header");
 
@@ -2437,18 +2663,17 @@ function renderResourcesPanel(project) {
 	header.appendChild(lbl);
 	header.appendChild(formatToggle);
 
-	// Toolbar (hidden by default)
 	const toolbar = document.createElement("div");
 	toolbar.classList.add("resources-toolbar");
 	toolbar.style.display = "none";
 
 	const fmtDefs = [
-		{ cmd: "bold",                label: "<strong>B</strong>", title: "Bold" },
-		{ cmd: "italic",              label: "<em>I</em>",          title: "Italic" },
-		{ cmd: "bulletList",          label: "• List",              title: "Bullet list" },
-		{ cmd: "heading",             label: "H",                   title: "Heading" },
-		{ cmd: "blockquote",          label: "❝",                  title: "Blockquote" },
-		{ cmd: "link",                label: "🔗",                 title: "Insert link" },
+		{ cmd: "bold",      label: "<strong>B</strong>", title: "Bold" },
+		{ cmd: "italic",    label: "<em>I</em>",          title: "Italic" },
+		{ cmd: "bulletList",label: "• List",              title: "Bullet list" },
+		{ cmd: "heading",   label: "H",                   title: "Heading" },
+		{ cmd: "blockquote",label: "❝",                  title: "Blockquote" },
+		{ cmd: "link",      label: "🔗",                 title: "Insert link" },
 	];
 
 	const content = document.createElement("div");
@@ -2456,7 +2681,6 @@ function renderResourcesPanel(project) {
 	content.contentEditable = "true";
 	content.dataset.placeholder = "Add notes for this project…";
 
-	// Load content
 	if (project.resources.html) {
 		content.innerHTML = project.resources.html;
 	} else if (project.resources.notes) {
@@ -2464,7 +2688,7 @@ function renderResourcesPanel(project) {
 		project.resources.html = content.innerHTML;
 	}
 
-	function save() {
+	function saveNotes() {
 		project.resources.html = content.innerHTML;
 		saveProjects();
 	}
@@ -2486,7 +2710,7 @@ function renderResourcesPanel(project) {
 				const url = prompt("Enter URL:", "https://");
 				if (url) document.execCommand("createLink", false, url);
 			}
-			save();
+			saveNotes();
 		});
 		toolbar.appendChild(btn);
 	});
@@ -2497,7 +2721,7 @@ function renderResourcesPanel(project) {
 		formatToggle.classList.toggle("active", !open);
 	});
 
-	content.addEventListener("input", save);
+	content.addEventListener("input", saveNotes);
 	content.addEventListener("click", (e) => { if (e.target.tagName === "A") e.preventDefault(); });
 
 	wrap.appendChild(header);
@@ -4503,7 +4727,7 @@ function renderShuffle() {
 
 	const shuffleBtn = document.createElement("button");
 	shuffleBtn.classList.add("shuffle-btn");
-	shuffleBtn.textContent = "Shuffle ⊕";
+	shuffleBtn.innerHTML = '<span class="material-symbols-rounded" style="font-size:1.1rem;vertical-align:-3px">shuffle</span> Shuffle';
 	shuffleBtn.addEventListener("click", shuffle);
 
 	const cardArea = document.createElement("div");
@@ -6777,7 +7001,7 @@ function renderProjects() {
 	const shuffleItem = document.createElement("div");
 	shuffleItem.classList.add("shuffle-sidebar-item");
 	if (currentView === "shuffle") shuffleItem.classList.add("active");
-	shuffleItem.textContent = "⊕ Shuffle";
+	shuffleItem.innerHTML = '<span class="material-symbols-rounded" style="font-size:1rem">shuffle</span> Shuffle';
 	shuffleItem.addEventListener("click", () => {
 		currentView = "shuffle";
 		currentProjectTab = "board";
@@ -7010,7 +7234,72 @@ function renderProjects() {
 
 	if (currentUser) {
 		bottomEl.appendChild(buildUserRow(currentUser));
+	} else if (guestMode) {
+		bottomEl.appendChild(buildGuestRow());
 	}
+}
+
+/* ======================
+   GUEST ROW
+====================== */
+
+function buildGuestRow() {
+	const wrap = document.createElement("div");
+
+	const banner = document.createElement("div");
+	banner.classList.add("guest-banner");
+
+	const cloudIcon = document.createElement("span");
+	cloudIcon.classList.add("material-symbols-rounded");
+	cloudIcon.style.fontSize = "0.95rem";
+	cloudIcon.style.color = "var(--palette-dark)";
+	cloudIcon.textContent = "cloud_off";
+
+	const bannerText = document.createElement("span");
+	bannerText.textContent = "Guest — data stays on this device";
+
+	banner.appendChild(cloudIcon);
+	banner.appendChild(bannerText);
+
+	const row = document.createElement("div");
+	row.classList.add("guest-user-row");
+	row.title = "Click to set display name";
+
+	const avatar = document.createElement("div");
+	avatar.classList.add("guest-user-avatar");
+	avatar.style.background = userPrefs.avatarColor || "#6366f1";
+	const displayName = userPrefs.displayName || "Guest";
+	avatar.textContent = displayName.charAt(0).toUpperCase();
+
+	const nameEl = document.createElement("span");
+	nameEl.classList.add("guest-user-name");
+	nameEl.textContent = displayName;
+
+	const loginBtn = document.createElement("button");
+	loginBtn.classList.add("guest-login-btn");
+	loginBtn.textContent = "Log in";
+	loginBtn.title = "Log in to sync across devices";
+	loginBtn.addEventListener("click", (e) => {
+		e.stopPropagation();
+		localStorage.removeItem("todoroki_guest");
+		window.location.reload();
+	});
+
+	row.addEventListener("click", () => {
+		const newName = prompt("Your display name:", userPrefs.displayName || "Guest");
+		if (newName !== null) {
+			userPrefs.displayName = newName.trim() || "Guest";
+			saveUserPrefs();
+			renderProjects();
+		}
+	});
+
+	row.appendChild(avatar);
+	row.appendChild(nameEl);
+	row.appendChild(loginBtn);
+	wrap.appendChild(banner);
+	wrap.appendChild(row);
+	return wrap;
 }
 
 /* ======================
