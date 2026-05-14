@@ -5290,7 +5290,24 @@ function renderOverview() {
 	const aiPanel = document.createElement("div");
 	aiPanel.classList.add("overview-ai-panel");
 
-	if (!userPrefs.anthropicApiKey) {
+	if (guestMode) {
+		const noKeyMsg = document.createElement("div");
+		noKeyMsg.classList.add("overview-ai-no-key");
+		const noKeyIcon = document.createElement("span");
+		noKeyIcon.classList.add("material-symbols-rounded");
+		noKeyIcon.textContent = "auto_awesome";
+		const noKeyText = document.createElement("span");
+		noKeyText.textContent = "Log in and add your Anthropic API key to use AI features";
+		const noKeyBtn = document.createElement("button");
+		noKeyBtn.classList.add("overview-ai-settings-btn");
+		noKeyBtn.textContent = "Log in";
+		noKeyBtn.addEventListener("click", () => {
+			localStorage.removeItem("todoroki_guest");
+			window.location.reload();
+		});
+		noKeyMsg.append(noKeyIcon, noKeyText, noKeyBtn);
+		aiPanel.appendChild(noKeyMsg);
+	} else if (!userPrefs.anthropicApiKey) {
 		const noKeyMsg = document.createElement("div");
 		noKeyMsg.classList.add("overview-ai-no-key");
 		const noKeyIcon = document.createElement("span");
@@ -5658,6 +5675,23 @@ When the user asks you to CREATE, UPDATE, or COMPLETE a todo, you MUST include a
 Only include fields that are changing in update_todo. Use null for project_id to add to inbox.
 For queries and summaries, do NOT include action tags — just respond with text.
 Keep responses concise. Use markdown for formatting. Never invent todo IDs — only use IDs from the context.`;
+
+	if (guestMode) {
+		const noKey = document.createElement("div");
+		noKey.classList.add("assistant-no-key");
+		const icon = document.createElement("span");
+		icon.classList.add("material-symbols-rounded");
+		icon.textContent = "auto_awesome";
+		const msg = document.createElement("p");
+		msg.textContent = "Log in and add your Anthropic API key to use the Personal Assistant.";
+		const btn = document.createElement("button");
+		btn.classList.add("overview-ai-settings-btn");
+		btn.textContent = "Log in";
+		btn.addEventListener("click", () => { localStorage.removeItem("todoroki_guest"); window.location.reload(); });
+		noKey.append(icon, msg, btn);
+		todoContainer.appendChild(noKey);
+		return;
+	}
 
 	if (!userPrefs.anthropicApiKey) {
 		const noKey = document.createElement("div");
