@@ -63,7 +63,7 @@ let assistantHistory = []; // persists for the session
 let lastRemoteSync = 0; // timestamp of the last successful pull from Supabase
 
 // Cross-device user preferences — loaded from Supabase after auth
-let userPrefs = { theme: "light", avatarColor: null, displayName: "", generalNotes: [], anthropicApiKey: null };
+let userPrefs = { theme: "light", avatarColor: null, displayName: "", generalNotes: [], anthropicApiKey: null, icalToken: null };
 
 function showColumnDeleteModal(col) {
 	const others = columns.filter(c => c.id !== col.id);
@@ -574,6 +574,7 @@ async function loadUserPrefs() {
 		userPrefs.displayName = data.display_name || "";
 		userPrefs.generalNotes = data.general_notes || [];
 		userPrefs.anthropicApiKey = data.anthropic_api_key || null;
+		userPrefs.icalToken       = data.ical_token || null;
 	} else {
 		// First login on this device — migrate from localStorage then save
 		const localTheme = localStorage.getItem("theme");
@@ -597,7 +598,8 @@ async function saveUserPrefs() {
 				display_name:     userPrefs.displayName,
 				general_notes:    userPrefs.generalNotes,
 				anthropic_api_key: userPrefs.anthropicApiKey || null,
-				updated_at:       new Date().toISOString(),
+				ical_token:        userPrefs.icalToken || null,
+				updated_at:        new Date().toISOString(),
 			},
 			{ onConflict: "user_id" }
 		);
@@ -628,6 +630,75 @@ function inlineMarkdown(text) {
 		.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
 		.replace(/\*(.+?)\*/g, "<em>$1</em>")
 		.replace(/`(.+?)`/g, "<code>$1</code>");
+}
+
+/* ======================
+   ICAL EXPORT
+====================== */
+
+function escICS(str) {
+	return (str || "").replace(/\\/g, "\\\\").replace(/,/g, "\\,").replace(/;/g, "\\;").replace(/\n/g, "\\n");
+}
+
+function generateICS() {
+	const lines = [
+		"BEGIN:VCALENDAR",
+		"VERSION:2.0",
+		"PRODID:-//Todoroki//TodoList//EN",
+		"CALSCALE:GREGORIAN",
+		"METHOD:PUBLISH",
+		"X-WR-CALNAME:Todoroki Schedule",
+	];
+
+	projects.forEach(project => {
+		project.todos.forEach(todo => {
+			if (!todo.schedule || typeof todo.schedule !== "object") return;
+			Object.entries(todo.schedule).forEach(([dateStr, sched]) => {
+				if (!sched || sched.startHour === undefined || sched.endHour === undefined) return;
+				const [y, m, d] = dateStr.split("-");
+				const sh = String(sched.startHour).padStart(2, "0");
+				const eh = String(sched.endHour).padStart(2, "0");
+				const dtstart = `${y}${m}${d}T${sh}0000`;
+				const dtend   = `${y}${m}${d}T${eh}0000`;
+				const uid     = `${todo.id}-${dateStr}@todoroki`;
+				const now     = new Date().toISOString().replace(/[-:.]/g, "").slice(0, 15) + "Z";
+				const descParts = [todo.description, `Project: ${project.title}`, `Priority: ${todo.priority || "Low"}`].filter(Boolean);
+				lines.push("BEGIN:VEVENT");
+				lines.push(`DTSTART:${dtstart}`);
+				lines.push(`DTEND:${dtend}`);
+				lines.push(`DTSTAMP:${now}`);
+				lines.push(`UID:${uid}`);
+				lines.push(`SUMMARY:${escICS(todo.title || "Untitled")}`);
+				if (descParts.length) lines.push(`DESCRIPTION:${escICS(descParts.join("\\n"))}`);
+				lines.push(`CATEGORIES:${escICS(project.title)}`);
+				lines.push("END:VEVENT");
+			});
+		});
+	});
+
+	lines.push("END:VCALENDAR");
+	return lines.join("\r\n");
+}
+
+function downloadICS() {
+	const blob = new Blob([generateICS()], { type: "text/calendar;charset=utf-8" });
+	const url = URL.createObjectURL(blob);
+	const a = document.createElement("a");
+	a.href = url;
+	a.download = "todoroki-schedule.ics";
+	a.click();
+	URL.revokeObjectURL(url);
+}
+
+async function getOrCreateIcalToken() {
+	if (userPrefs.icalToken) return userPrefs.icalToken;
+	// Generate a random 32-char hex token
+	const bytes = new Uint8Array(16);
+	crypto.getRandomValues(bytes);
+	const token = Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+	userPrefs.icalToken = token;
+	await saveUserPrefs();
+	return token;
 }
 
 function parseMarkdown(text) {
@@ -692,6 +763,7 @@ function buildProjectRow(project, index) {
 		tabs:             project.tabs || defaultProjectTabs(),
 		notes:            project.notes || [],
 		tools:            project.tools || [],
+		lists:            project.lists || [],
 		color:            project.color || null,
 		icon:             project.icon  || null,
 	};
@@ -765,7 +837,7 @@ async function syncAllToSupabase() {
 			let { error } = await supabase.from("projects").upsert(projectRows, { onConflict: "id" });
 			if (error && isMissingColumnError(error)) {
 				// Strip columns that require migrations and retry with base columns only
-				const safeRows = projectRows.map(({ code, todo_counter, tabs, notes, tools, color, icon, ...rest }) => rest);
+				const safeRows = projectRows.map(({ code, todo_counter, tabs, notes, tools, lists, color, icon, ...rest }) => rest);
 				({ error } = await supabase.from("projects").upsert(safeRows, { onConflict: "id" }));
 			}
 			if (error) throw error;
@@ -909,6 +981,7 @@ async function loadFromSupabase() {
 			tabs:           (row.tabs && row.tabs.length) ? row.tabs : defaultProjectTabs(),
 			notes:          row.notes || [],
 			tools:          row.tools || [],
+			lists:          row.lists || [],
 			color:          row.color || null,
 			icon:           row.icon  || null,
 			todos:          [],
@@ -973,6 +1046,7 @@ async function reloadFromSupabase() {
 		renderProjects();
 		if (currentView === "inbox") renderInbox();
 		else if (currentView === "overview") renderOverview();
+		else if (currentView === "shuffle") renderShuffle();
 		else renderTodos();
 	} catch (err) {
 		console.error("Failed to reload from Supabase:", err);
@@ -1019,6 +1093,8 @@ function pushViewUrl() {
 		else path = `/overview/${overviewTab}`;
 	} else if (currentView === "inbox") {
 		path = "/inbox";
+	} else if (currentView === "shuffle") {
+		path = "/shuffle";
 	} else {
 		const project = getCurrentProject();
 		if (!project) {
@@ -1042,6 +1118,8 @@ function navigateToPath(pathname) {
 		overviewTab = "assistant";
 	} else if (parts[0] === "inbox") {
 		currentView = "inbox";
+	} else if (parts[0] === "shuffle") {
+		currentView = "shuffle";
 	} else {
 		const project = projects.find(p => getProjectSlug(p) === parts[0]);
 		if (project) {
@@ -1062,11 +1140,15 @@ function navigateToPath(pathname) {
 }
 
 window.addEventListener("popstate", () => {
+	// Close any open detail modals first
+	document.querySelectorAll(".detail-overlay").forEach(el => el.remove());
 	navigateToPath(window.location.pathname);
 	renderProjects();
 	if (currentView === "inbox") renderInbox();
 	else if (currentView === "overview") renderOverview();
+	else if (currentView === "shuffle") renderShuffle();
 	else renderTodos();
+	checkDetailQuery();
 });
 
 /* ======================
@@ -1094,6 +1176,7 @@ supabase.auth.getSession().then(async ({ data: { session } }) => {
 			defaultProject.tabs        = defaultProjectTabs();
 			defaultProject.notes       = [];
 			defaultProject.tools       = [];
+			defaultProject.lists       = [];
 			projects.push(defaultProject);
 			currentProjectId = defaultProject.id;
 			saveProjects();
@@ -1105,7 +1188,9 @@ supabase.auth.getSession().then(async ({ data: { session } }) => {
 	renderProjects();
 	if (currentView === "inbox") renderInbox();
 	else if (currentView === "overview") renderOverview();
+	else if (currentView === "shuffle") renderShuffle();
 	else renderTodos();
+	checkDetailQuery();
 });
 
 /* ======================
@@ -1198,6 +1283,7 @@ function addProject(title) {
 	project.tabs        = defaultProjectTabs();
 	project.notes       = [];
 	project.tools       = [];
+	project.lists       = [];
 	projects.push(project);
 	currentProjectId  = project.id;
 	currentProjectTab = "board";
@@ -1770,6 +1856,17 @@ function buildTodoCard(todo, ctx) {
 		}
 	}
 
+	// Pop-out button
+	const popoutBtn = document.createElement("button");
+	popoutBtn.classList.add("todo-card-popout-btn");
+	popoutBtn.title = "Open detail / copy link";
+	popoutBtn.innerHTML = '<span class="material-symbols-rounded" style="font-size:0.95rem">open_in_new</span>';
+	popoutBtn.addEventListener("click", (e) => {
+		e.stopPropagation();
+		const proj = ctx.project || (ctx.isInbox ? null : getCurrentProject());
+		showTodoDetail(todo, proj);
+	});
+
 	todoHeader.appendChild(todoTitle);
 	if (!ctx.isInbox) {
 		const proj = getCurrentProject();
@@ -1777,6 +1874,7 @@ function buildTodoCard(todo, ctx) {
 	}
 	todoHeader.appendChild(commentBtn);
 	todoHeader.appendChild(infoBtn);
+	todoHeader.appendChild(popoutBtn);
 	todoHeader.appendChild(moveBtn);
 	todoHeader.appendChild(btnDelete);
 
@@ -2102,7 +2200,7 @@ function showContextAddForm() {
 		todo.tags = tagsInput.value.split(",").map(t => t.trim().toLowerCase()).filter(Boolean);
 
 		if (project) {
-			project.todos.push(todo);
+			project.addTodo(todo);
 			saveProjects();
 			if (currentView === "project") renderTodos();
 		} else {
@@ -2210,8 +2308,9 @@ function showEpicAddForm(epicId) {
 ====================== */
 
 const TAB_TYPE_OPTIONS = [
-	{ type: "notes", label: "Notes" },
-	{ type: "stack", label: "Tools" },
+	{ type: "notes",  label: "Notes" },
+	{ type: "stack",  label: "Tools" },
+	{ type: "lists",  label: "Lists" },
 ];
 
 function buildProjectTabBar(project) {
@@ -2934,7 +3033,17 @@ function buildNoteCard(note, project, refresh, refreshPills) {
 		if (refreshPills) refreshPills();
 	});
 
+	const notePopoutBtn = document.createElement("button");
+	notePopoutBtn.classList.add("note-card-popout-btn");
+	notePopoutBtn.title = "Open detail / copy link";
+	notePopoutBtn.innerHTML = '<span class="material-symbols-rounded" style="font-size:0.95rem">open_in_new</span>';
+	notePopoutBtn.addEventListener("click", (e) => {
+		e.stopPropagation();
+		showNoteDetail(note, project);
+	});
+
 	cardHeader.appendChild(meta);
+	cardHeader.appendChild(notePopoutBtn);
 	cardHeader.appendChild(deleteBtn);
 
 	// Format toolbar
@@ -4108,6 +4217,623 @@ function setViewHeaderIcon(text, isMaterial) {
 	titleIcon.style.cursor = "default";
 }
 
+/* ======================
+   LISTS TAB
+====================== */
+
+function renderListsTab(project) {
+	if (!project.lists) project.lists = [];
+
+	const container = document.createElement("div");
+	container.classList.add("lists-tab");
+
+	const header = document.createElement("div");
+	header.classList.add("lists-tab-header");
+
+	const addBtn = document.createElement("button");
+	addBtn.classList.add("lists-add-btn");
+	addBtn.textContent = "+ New List";
+	addBtn.addEventListener("click", () => {
+		project.lists.push({ id: self.crypto.randomUUID(), title: "New List", collapsed: false, items: [] });
+		saveProjects();
+		renderTodos();
+	});
+	header.appendChild(addBtn);
+	container.appendChild(header);
+
+	if (project.lists.length === 0) {
+		const empty = document.createElement("div");
+		empty.classList.add("lists-empty");
+		empty.textContent = "No lists yet — click + New List to start.";
+		container.appendChild(empty);
+	}
+
+	project.lists.forEach((list, listIdx) => {
+		const card = document.createElement("div");
+		card.classList.add("list-card");
+		if (list.collapsed) card.classList.add("list-card--collapsed");
+
+		// Header row
+		const cardHeader = document.createElement("div");
+		cardHeader.classList.add("list-card-header");
+
+		const toggleBtn = document.createElement("button");
+		toggleBtn.classList.add("list-card-toggle");
+		toggleBtn.textContent = list.collapsed ? "▶" : "▼";
+		toggleBtn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			list.collapsed = !list.collapsed;
+			saveProjects();
+			renderTodos();
+		});
+
+		const titleEl = document.createElement("span");
+		titleEl.classList.add("list-card-title");
+		titleEl.textContent = list.title;
+		titleEl.title = "Double-click to rename";
+		titleEl.addEventListener("dblclick", () => {
+			const input = document.createElement("input");
+			input.classList.add("list-card-title-input");
+			input.value = list.title;
+			titleEl.replaceWith(input);
+			input.focus();
+			input.select();
+			function saveTitle() {
+				list.title = input.value.trim() || list.title;
+				saveProjects();
+				renderTodos();
+			}
+			input.addEventListener("blur", saveTitle);
+			input.addEventListener("keydown", (e) => {
+				if (e.key === "Enter") input.blur();
+				if (e.key === "Escape") renderTodos();
+			});
+		});
+
+		const countBadge = document.createElement("span");
+		countBadge.classList.add("list-card-count");
+		const done = list.items.filter(i => i.checked).length;
+		if (list.items.length) countBadge.textContent = `${done}/${list.items.length}`;
+
+		const deleteBtn = document.createElement("button");
+		deleteBtn.classList.add("list-card-delete");
+		deleteBtn.title = "Delete list";
+		deleteBtn.textContent = "✕";
+		deleteBtn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			project.lists.splice(listIdx, 1);
+			saveProjects();
+			renderTodos();
+		});
+
+		// Click header to toggle collapse
+		cardHeader.addEventListener("click", () => {
+			list.collapsed = !list.collapsed;
+			saveProjects();
+			renderTodos();
+		});
+
+		cardHeader.appendChild(toggleBtn);
+		cardHeader.appendChild(titleEl);
+		cardHeader.appendChild(countBadge);
+		cardHeader.appendChild(deleteBtn);
+		card.appendChild(cardHeader);
+
+		if (!list.collapsed) {
+			const itemsEl = document.createElement("ul");
+			itemsEl.classList.add("list-card-items");
+
+			list.items.forEach((item, itemIdx) => {
+				const li = document.createElement("li");
+				li.classList.add("list-item");
+				if (item.checked) li.classList.add("list-item--done");
+
+				const checkbox = document.createElement("input");
+				checkbox.type = "checkbox";
+				checkbox.checked = item.checked;
+				checkbox.addEventListener("change", (e) => {
+					e.stopPropagation();
+					item.checked = checkbox.checked;
+					li.classList.toggle("list-item--done", item.checked);
+					saveProjects();
+					// Update count badge
+					const doneCount = list.items.filter(i => i.checked).length;
+					countBadge.textContent = list.items.length ? `${doneCount}/${list.items.length}` : "";
+				});
+
+				const textEl = document.createElement("span");
+				textEl.classList.add("list-item-text");
+				textEl.textContent = item.text;
+				textEl.title = "Double-click to edit";
+				textEl.addEventListener("dblclick", () => {
+					const input = document.createElement("input");
+					input.classList.add("list-item-input");
+					input.value = item.text;
+					textEl.replaceWith(input);
+					input.focus();
+					function saveItemText() {
+						const val = input.value.trim();
+						if (val) item.text = val;
+						else list.items.splice(itemIdx, 1);
+						saveProjects();
+						renderTodos();
+					}
+					input.addEventListener("blur", saveItemText);
+					input.addEventListener("keydown", (e) => {
+						if (e.key === "Enter") input.blur();
+						if (e.key === "Escape") renderTodos();
+					});
+				});
+
+				const delItem = document.createElement("button");
+				delItem.classList.add("list-item-delete");
+				delItem.title = "Remove item";
+				delItem.textContent = "✕";
+				delItem.addEventListener("click", (e) => {
+					e.stopPropagation();
+					list.items.splice(itemIdx, 1);
+					saveProjects();
+					renderTodos();
+				});
+
+				li.appendChild(checkbox);
+				li.appendChild(textEl);
+				li.appendChild(delItem);
+				itemsEl.appendChild(li);
+			});
+
+			// Add item row
+			const addItemRow = document.createElement("div");
+			addItemRow.classList.add("list-add-item-row");
+
+			const addInput = document.createElement("input");
+			addInput.classList.add("list-add-item-input");
+			addInput.placeholder = "Add item…";
+
+			function addItem() {
+				const text = addInput.value.trim();
+				if (!text) return;
+				list.items.push({ id: self.crypto.randomUUID(), text, checked: false });
+				saveProjects();
+				renderTodos();
+			}
+			addInput.addEventListener("keydown", (e) => { if (e.key === "Enter") addItem(); });
+			addInput.addEventListener("click", (e) => e.stopPropagation());
+
+			const addItemBtn = document.createElement("button");
+			addItemBtn.classList.add("list-add-item-btn");
+			addItemBtn.textContent = "+";
+			addItemBtn.addEventListener("click", (e) => { e.stopPropagation(); addItem(); });
+
+			addItemRow.appendChild(addInput);
+			addItemRow.appendChild(addItemBtn);
+			card.appendChild(itemsEl);
+			card.appendChild(addItemRow);
+		}
+
+		container.appendChild(card);
+	});
+
+	todoContainer.innerHTML = "";
+	todoContainer.appendChild(container);
+}
+
+/* ======================
+   SHUFFLE VIEW
+====================== */
+
+function renderShuffle() {
+	addTodoBtn.style.display = "none";
+	searchQuery = "";
+	todoContainer.innerHTML = "";
+	todoContainer.classList.remove("swimlane-mode");
+	todoContainer.classList.remove("overview-view");
+
+	const mainEl = document.querySelector("#main");
+	const fabBtn = document.querySelector("#fab-btn");
+	mainEl.style.removeProperty("--palette-dark");
+	fabBtn.style.background = "";
+	fabBtn.style.boxShadow = "";
+	projectTitle.style.color = "";
+	projectCodeBadge.style.display = "none";
+	projectTitle.textContent = "Shuffle";
+	setViewHeaderIcon("shuffle", true);
+
+	projectTabsContainer.innerHTML = "";
+	sortBarContainer.innerHTML = "";
+	selectionBarContainer.innerHTML = "";
+
+	let filterProjectId = null;
+	let filterPriority = null;
+
+	function getPool() {
+		const completedLabels = columns.filter(c => c.isCompleted).map(c => c.label);
+		const result = [];
+		const srcs = filterProjectId ? projects.filter(p => p.id === filterProjectId) : projects;
+		srcs.forEach(p => p.todos.forEach(t => {
+			if (completedLabels.includes(t.status)) return;
+			if (filterPriority && t.priority !== filterPriority) return;
+			result.push({ todo: t, project: p });
+		}));
+		return result;
+	}
+
+	const container = document.createElement("div");
+	container.classList.add("shuffle-view");
+
+	// Filters
+	const filtersRow = document.createElement("div");
+	filtersRow.classList.add("shuffle-filters");
+
+	const projectSelect = document.createElement("select");
+	projectSelect.classList.add("shuffle-filter-select");
+	const allProj = document.createElement("option");
+	allProj.value = "";
+	allProj.textContent = "All Projects";
+	projectSelect.appendChild(allProj);
+	projects.forEach(p => {
+		const opt = document.createElement("option");
+		opt.value = p.id;
+		opt.textContent = p.title;
+		projectSelect.appendChild(opt);
+	});
+	projectSelect.addEventListener("change", () => {
+		filterProjectId = projectSelect.value || null;
+		shuffle();
+	});
+
+	const priorityWrap = document.createElement("div");
+	priorityWrap.classList.add("shuffle-priority-pills");
+	["All", "Low", "Medium", "High"].forEach(p => {
+		const pill = document.createElement("button");
+		pill.classList.add("shuffle-priority-pill");
+		pill.textContent = p;
+		if ((p === "All" && !filterPriority) || p === filterPriority) pill.classList.add("active");
+		pill.addEventListener("click", () => {
+			filterPriority = p === "All" ? null : p;
+			priorityWrap.querySelectorAll(".shuffle-priority-pill").forEach(el => el.classList.remove("active"));
+			pill.classList.add("active");
+			shuffle();
+		});
+		priorityWrap.appendChild(pill);
+	});
+
+	filtersRow.appendChild(projectSelect);
+	filtersRow.appendChild(priorityWrap);
+
+	const shuffleBtn = document.createElement("button");
+	shuffleBtn.classList.add("shuffle-btn");
+	shuffleBtn.textContent = "Shuffle ⊕";
+	shuffleBtn.addEventListener("click", shuffle);
+
+	const cardArea = document.createElement("div");
+	cardArea.classList.add("shuffle-card-area");
+
+	function shuffle() {
+		const pool = getPool();
+		cardArea.innerHTML = "";
+		if (!pool.length) {
+			const empty = document.createElement("div");
+			empty.classList.add("shuffle-empty");
+			empty.textContent = "No matching uncompleted todos found.";
+			cardArea.appendChild(empty);
+			return;
+		}
+		const { todo, project } = pool[Math.floor(Math.random() * pool.length)];
+
+		const projectLabel = document.createElement("div");
+		projectLabel.classList.add("shuffle-todo-project");
+		projectLabel.textContent = project.title;
+		if (project.color) projectLabel.style.color = project.color;
+
+		const card = buildTodoCard(todo, {
+			save: () => saveProjects(),
+			delete: () => { project.removeTodo(todo.id); saveProjects(); shuffle(); },
+			isInbox: false,
+		});
+
+		cardArea.appendChild(projectLabel);
+		cardArea.appendChild(card);
+	}
+
+	container.appendChild(filtersRow);
+	container.appendChild(shuffleBtn);
+	container.appendChild(cardArea);
+
+	todoContainer.appendChild(container);
+	shuffle();
+}
+
+/* ======================
+   TODO / NOTE DETAIL MODAL
+====================== */
+
+function showTodoDetail(todo, project) {
+	const basePath = window.location.pathname;
+	history.pushState({}, "", basePath + "?todo=" + todo.id);
+
+	function save() { if (project) saveProjects(); else saveInbox(); }
+
+	const overlay = document.createElement("div");
+	overlay.classList.add("detail-overlay");
+
+	const panel = document.createElement("div");
+	panel.classList.add("detail-panel");
+
+	// Header
+	const header = document.createElement("div");
+	header.classList.add("detail-panel-header");
+
+	const titleInput = document.createElement("input");
+	titleInput.classList.add("detail-panel-title");
+	titleInput.value = todo.title || "";
+	titleInput.addEventListener("input", () => { todo.title = titleInput.value; save(); });
+
+	const copyBtn = document.createElement("button");
+	copyBtn.classList.add("detail-panel-copy-link");
+	copyBtn.title = "Copy link";
+	copyBtn.innerHTML = '<span class="material-symbols-rounded" style="font-size:1rem">link</span>';
+	copyBtn.addEventListener("click", () => {
+		navigator.clipboard.writeText(window.location.href);
+		showUndoToast("Link copied to clipboard", null);
+	});
+
+	const closeBtn = document.createElement("button");
+	closeBtn.classList.add("detail-panel-close");
+	closeBtn.title = "Close";
+	closeBtn.textContent = "✕";
+
+	function closeDetail() {
+		history.pushState({}, "", basePath);
+		overlay.remove();
+		document.removeEventListener("keydown", onKeydown);
+		// Refresh card in view
+		if (currentView === "project") renderTodos();
+	}
+	function onKeydown(e) { if (e.key === "Escape") closeDetail(); }
+	closeBtn.addEventListener("click", closeDetail);
+	overlay.addEventListener("click", (e) => { if (e.target === overlay) closeDetail(); });
+	document.addEventListener("keydown", onKeydown);
+
+	header.appendChild(titleInput);
+	header.appendChild(copyBtn);
+	header.appendChild(closeBtn);
+
+	// Body
+	const body = document.createElement("div");
+	body.classList.add("detail-panel-body");
+
+	// Meta row
+	const metaRow = document.createElement("div");
+	metaRow.classList.add("detail-panel-meta");
+
+	if (project) {
+		const projBadge = document.createElement("span");
+		projBadge.classList.add("detail-project-badge");
+		projBadge.textContent = project.title;
+		if (project.color) {
+			projBadge.style.background = project.color + "1a";
+			projBadge.style.color = project.color;
+			projBadge.style.borderColor = project.color + "33";
+		}
+		metaRow.appendChild(projBadge);
+	}
+
+	const prioritySelect = document.createElement("select");
+	prioritySelect.classList.add("detail-meta-select");
+	prioritySelect.dataset.priority = (todo.priority || "low").toLowerCase();
+	["Low", "Medium", "High"].forEach(p => {
+		const opt = document.createElement("option");
+		opt.value = p;
+		opt.textContent = p;
+		if (todo.priority === p) opt.selected = true;
+		prioritySelect.appendChild(opt);
+	});
+	prioritySelect.addEventListener("change", () => {
+		todo.priority = prioritySelect.value;
+		prioritySelect.dataset.priority = prioritySelect.value.toLowerCase();
+		save();
+	});
+
+	const statusSelect = document.createElement("select");
+	statusSelect.classList.add("detail-meta-select");
+	getColumnLabels().forEach(label => {
+		const opt = document.createElement("option");
+		opt.value = label;
+		opt.textContent = label;
+		if (todo.status === label) opt.selected = true;
+		statusSelect.appendChild(opt);
+	});
+	statusSelect.addEventListener("change", () => {
+		todo.status = statusSelect.value;
+		const completedLabels = columns.filter(c => c.isCompleted).map(c => c.label);
+		todo.completedAt = completedLabels.includes(todo.status) ? (todo.completedAt || Date.now()) : null;
+		save();
+	});
+
+	const dueDateInput = document.createElement("input");
+	dueDateInput.type = "date";
+	dueDateInput.classList.add("detail-meta-date");
+	if (todo.dueDate) dueDateInput.value = todo.dueDate;
+	dueDateInput.addEventListener("change", () => { todo.dueDate = dueDateInput.value; save(); });
+
+	metaRow.appendChild(prioritySelect);
+	metaRow.appendChild(statusSelect);
+	metaRow.appendChild(dueDateInput);
+
+	// Description
+	const descLabel = document.createElement("div");
+	descLabel.classList.add("detail-field-label");
+	descLabel.textContent = "Description";
+
+	const descArea = document.createElement("textarea");
+	descArea.classList.add("detail-description");
+	descArea.value = todo.description || "";
+	descArea.placeholder = "Add a description…";
+	descArea.addEventListener("input", () => { todo.description = descArea.value; save(); });
+
+	// Checklist
+	const checklistSection = document.createElement("div");
+	checklistSection.classList.add("detail-checklist-section");
+
+	function buildChecklist() {
+		checklistSection.innerHTML = "";
+		const clLabel = document.createElement("div");
+		clLabel.classList.add("detail-field-label");
+		clLabel.textContent = "Checklist";
+		checklistSection.appendChild(clLabel);
+
+		if (!Array.isArray(todo.checklist)) todo.checklist = [];
+
+		const list = document.createElement("ul");
+		list.classList.add("detail-checklist");
+
+		todo.checklist.forEach((item, idx) => {
+			const li = document.createElement("li");
+			li.classList.add("detail-checklist-item");
+			if (item.completed) li.classList.add("done");
+
+			const cb = document.createElement("input");
+			cb.type = "checkbox";
+			cb.checked = item.completed;
+			cb.addEventListener("change", () => { item.completed = cb.checked; li.classList.toggle("done", item.completed); save(); });
+
+			const span = document.createElement("span");
+			span.textContent = item.text;
+			span.contentEditable = "true";
+			span.addEventListener("blur", () => { item.text = span.textContent.trim() || item.text; save(); });
+
+			const delBtn = document.createElement("button");
+			delBtn.classList.add("detail-checklist-del");
+			delBtn.textContent = "✕";
+			delBtn.addEventListener("click", () => { todo.checklist.splice(idx, 1); save(); buildChecklist(); });
+
+			li.appendChild(cb);
+			li.appendChild(span);
+			li.appendChild(delBtn);
+			list.appendChild(li);
+		});
+
+		const addRow = document.createElement("div");
+		addRow.classList.add("detail-checklist-add-row");
+		const addInput = document.createElement("input");
+		addInput.classList.add("detail-checklist-input");
+		addInput.placeholder = "Add checklist item…";
+		addInput.addEventListener("keydown", (e) => {
+			if (e.key === "Enter" && addInput.value.trim()) {
+				todo.checklist.push({ id: self.crypto.randomUUID(), text: addInput.value.trim(), completed: false });
+				save();
+				buildChecklist();
+			}
+		});
+		addRow.appendChild(addInput);
+		checklistSection.appendChild(list);
+		checklistSection.appendChild(addRow);
+	}
+	buildChecklist();
+
+	body.appendChild(metaRow);
+	body.appendChild(descLabel);
+	body.appendChild(descArea);
+	body.appendChild(checklistSection);
+
+	panel.appendChild(header);
+	panel.appendChild(body);
+	overlay.appendChild(panel);
+	document.body.appendChild(overlay);
+	titleInput.focus();
+}
+
+function showNoteDetail(note, project) {
+	const basePath = window.location.pathname;
+	history.pushState({}, "", basePath + "?note=" + note.id);
+
+	const overlay = document.createElement("div");
+	overlay.classList.add("detail-overlay");
+
+	const panel = document.createElement("div");
+	panel.classList.add("detail-panel");
+	panel.style.maxWidth = "720px";
+
+	// Header
+	const header = document.createElement("div");
+	header.classList.add("detail-panel-header");
+
+	const titleEl = document.createElement("span");
+	titleEl.style.cssText = "flex:1;font-size:1rem;font-weight:600;color:var(--md-text-color);";
+	titleEl.textContent = note.category ? note.category : (project?.title || "Note");
+
+	const copyBtn = document.createElement("button");
+	copyBtn.classList.add("detail-panel-copy-link");
+	copyBtn.title = "Copy link";
+	copyBtn.innerHTML = '<span class="material-symbols-rounded" style="font-size:1rem">link</span>';
+	copyBtn.addEventListener("click", () => {
+		navigator.clipboard.writeText(window.location.href);
+		showUndoToast("Link copied to clipboard", null);
+	});
+
+	const closeBtn = document.createElement("button");
+	closeBtn.classList.add("detail-panel-close");
+	closeBtn.title = "Close";
+	closeBtn.textContent = "✕";
+
+	function closeDetail() {
+		history.pushState({}, "", basePath);
+		overlay.remove();
+		document.removeEventListener("keydown", onKeydown);
+	}
+	function onKeydown(e) { if (e.key === "Escape") closeDetail(); }
+	closeBtn.addEventListener("click", closeDetail);
+	overlay.addEventListener("click", (e) => { if (e.target === overlay) closeDetail(); });
+	document.addEventListener("keydown", onKeydown);
+
+	header.appendChild(titleEl);
+	header.appendChild(copyBtn);
+	header.appendChild(closeBtn);
+
+	// Content (full editable)
+	const content = document.createElement("div");
+	content.classList.add("note-detail-content");
+	content.contentEditable = "true";
+	content.innerHTML = note.html || note.content || "";
+
+	let saveTimeout;
+	content.addEventListener("input", () => {
+		clearTimeout(saveTimeout);
+		saveTimeout = setTimeout(() => {
+			note.html = content.innerHTML;
+			note.content = content.innerText;
+			note.updatedAt = Date.now();
+			saveProjects();
+		}, 500);
+	});
+
+	panel.appendChild(header);
+	panel.appendChild(content);
+	overlay.appendChild(panel);
+	document.body.appendChild(overlay);
+	content.focus();
+}
+
+function checkDetailQuery() {
+	const params = new URLSearchParams(window.location.search);
+	const todoId = params.get("todo");
+	const noteId = params.get("note");
+	if (todoId) {
+		for (const project of projects) {
+			const todo = project.todos.find(t => t.id === todoId);
+			if (todo) { showTodoDetail(todo, project); return; }
+		}
+		const inboxTodo = inbox.find(t => t.id === todoId);
+		if (inboxTodo) showTodoDetail(inboxTodo, null);
+	} else if (noteId) {
+		for (const project of projects) {
+			const note = project.notes?.find(n => n.id === noteId);
+			if (note) { showNoteDetail(note, project); return; }
+		}
+	}
+}
+
 function renderOverview() {
 	addTodoBtn.style.display = "none";
 	searchQuery = "";
@@ -4964,6 +5690,41 @@ function renderOverviewInProgress() {
 	tabGroup.appendChild(dayBtn);
 	tabGroup.appendChild(weekBtn);
 	topBar.appendChild(tabGroup);
+
+	// Calendar export controls
+	const calActions = document.createElement("div");
+	calActions.classList.add("inprogress-cal-actions");
+
+	const exportBtn = document.createElement("button");
+	exportBtn.classList.add("inprogress-cal-btn");
+	exportBtn.title = "Download .ics file to import into any calendar app";
+	exportBtn.innerHTML = '<span class="material-symbols-rounded" style="font-size:1rem;vertical-align:middle;">download</span> Export .ics';
+	exportBtn.addEventListener("click", () => { downloadICS(); showUndoToast("Calendar file downloaded", null); });
+
+	const feedBtn = document.createElement("button");
+	feedBtn.classList.add("inprogress-cal-btn");
+	feedBtn.title = "Get a live iCal feed URL to subscribe from Google Calendar";
+	feedBtn.innerHTML = '<span class="material-symbols-rounded" style="font-size:1rem;vertical-align:middle;">link</span> iCal Feed';
+	feedBtn.addEventListener("click", async () => {
+		feedBtn.disabled = true;
+		feedBtn.textContent = "…";
+		try {
+			const token = await getOrCreateIcalToken();
+			const feedUrl = `${window.location.origin}/api/calendar/${token}.ics`;
+			await navigator.clipboard.writeText(feedUrl);
+			showUndoToast("Feed URL copied — paste it into Google Calendar → Other calendars → From URL", null);
+		} catch (e) {
+			alert("Failed to generate feed URL: " + e.message);
+		} finally {
+			feedBtn.disabled = false;
+			feedBtn.innerHTML = '<span class="material-symbols-rounded" style="font-size:1rem;vertical-align:middle;">link</span> iCal Feed';
+		}
+	});
+
+	calActions.appendChild(exportBtn);
+	calActions.appendChild(feedBtn);
+	topBar.appendChild(calActions);
+
 	outer.appendChild(topBar);
 
 	const splitView = document.createElement("div");
@@ -5761,6 +6522,7 @@ function renderTodos() {
 	if (!project.tabs || !project.tabs.length) project.tabs = defaultProjectTabs();
 	if (!project.notes) project.notes = [];
 	if (!project.tools) project.tools = [];
+	if (!project.lists) project.lists = [];
 
 	projectTabsContainer.innerHTML = "";
 	projectTabsContainer.appendChild(buildProjectTabBar(project));
@@ -5787,6 +6549,14 @@ function renderTodos() {
 		sortBarContainer.innerHTML = "";
 		addTodoBtn.style.display = "none";
 		renderStackTab(project);
+		renderSelectionBar();
+		return;
+	}
+
+	if (activeTab?.type === "lists") {
+		sortBarContainer.innerHTML = "";
+		addTodoBtn.style.display = "none";
+		renderListsTab(project);
 		renderSelectionBar();
 		return;
 	}
@@ -6002,6 +6772,23 @@ function renderProjects() {
 	});
 
 	scrollEl.appendChild(inboxItem);
+
+	// Shuffle sidebar item
+	const shuffleItem = document.createElement("div");
+	shuffleItem.classList.add("shuffle-sidebar-item");
+	if (currentView === "shuffle") shuffleItem.classList.add("active");
+	shuffleItem.textContent = "⊕ Shuffle";
+	shuffleItem.addEventListener("click", () => {
+		currentView = "shuffle";
+		currentProjectTab = "board";
+		selectedTodos.clear();
+		sidebar.classList.remove("open");
+		sidebarBackdrop.classList.remove("visible");
+		pushViewUrl();
+		renderProjects();
+		renderShuffle();
+	});
+	scrollEl.appendChild(shuffleItem);
 
 	const sectionLabel = document.createElement("div");
 	sectionLabel.classList.add("sidebar-section-label");
