@@ -273,9 +273,19 @@ body {
 /* ── Header ── */
 .todo-header {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
-    gap: 8px;
+    gap: 4px;
+    min-height: 22px;
+    margin-bottom: 3px;
+}
+
+.todo-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+    margin-left: auto;
 }
 
 .todo-title {
@@ -283,8 +293,8 @@ body {
     font-weight: 600;
     color: #1c1b1f;
     line-height: 1.4;
-    flex: 1;
-    min-width: 0;
+    display: block;
+    width: 100%;
     cursor: pointer;
     border-radius: 4px;
     padding: 1px 3px;
@@ -6220,7 +6230,20 @@ textarea.modal-form-input {
    LISTS TAB
 ====================== */
 .lists-tab { padding: 20px 24px; max-width: 700px; }
-.lists-tab-header { display: flex; align-items: center; margin-bottom: 20px; }
+.lists-tab-header { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+.lists-sort-select {
+    margin-left: auto;
+    border: 1px solid var(--md-border);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 0.82rem;
+    background: var(--md-bg);
+    color: var(--md-text-color);
+    cursor: pointer;
+    outline: none;
+    font-family: inherit;
+}
+.lists-sort-select:focus { border-color: var(--palette-dark); }
 .lists-add-btn {
     background: var(--palette-dark);
     color: #fff;
@@ -6302,6 +6325,23 @@ textarea.modal-form-input {
 }
 .list-card-header:hover .list-card-delete { opacity: 1; }
 .list-card-delete:hover { background: var(--md-red, #fee2e2); color: #dc2626; }
+.list-card-action-btn {
+    background: none;
+    border: none;
+    color: var(--md-label-color);
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    opacity: 0;
+    transition: opacity 0.15s, background 0.12s;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    line-height: 1;
+}
+.list-card-header:hover .list-card-action-btn { opacity: 1; }
+.list-card-action-btn:hover { background: var(--md-hover); color: var(--md-text-color); }
+.list-card-action-btn:disabled { opacity: 0.2 !important; cursor: default; pointer-events: none; }
 .list-card-items { list-style: none; padding: 0 16px 4px; margin: 0; }
 .list-item {
     display: flex;
@@ -6370,6 +6410,7 @@ textarea.modal-form-input {
 [data-theme="dark"] .list-card { background: #1a1d28; border-color: #252a3a; }
 [data-theme="dark"] .list-card-title-input { background: #1a1d28; border-color: var(--palette-dark); }
 [data-theme="dark"] .list-item { border-color: #252a3a; }
+[data-theme="dark"] .lists-sort-select { background: #1a1d28; border-color: #252a3a; }
 [data-theme="dark"] .list-add-item-input { background: #1a1d28; border-color: #252a3a; }
 [data-theme="dark"] .list-card-count { background: #252a3a; }
 
@@ -6380,16 +6421,16 @@ textarea.modal-form-input {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 7px 12px;
+    padding: 10px 12px;
+    margin: 8px 8px 0;
     border-radius: 8px;
     cursor: pointer;
     font-size: 0.875rem;
-    font-weight: 500;
-    color: var(--md-text-color);
-    transition: background 0.12s;
-    margin: 1px 0;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.85);
+    transition: background 0.15s;
 }
-.shuffle-sidebar-item:hover { background: var(--md-hover); }
+.shuffle-sidebar-item:hover { background: rgba(255, 255, 255, 0.1); }
 .shuffle-sidebar-item.active { background: var(--palette-dark); color: #fff; }
 .shuffle-view {
     padding: 24px;

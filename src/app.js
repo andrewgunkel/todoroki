@@ -40,6 +40,7 @@ window.projects = projects;
 
 let sortBy = "default"; // default | priority | createdAt | updatedAt | dueDate
 let sortDir = "asc"; // asc | desc
+let listSortBy = "default"; // default | az | za | newest | oldest | updated | progress-hi | progress-lo | size-hi | size-lo
 
 let currentUser = null;
 const guestMode = !!(localStorage.getItem("todoroki_guest") === "true");
@@ -1914,7 +1915,7 @@ function buildTodoCard(todo, ctx) {
 	const todoHeader = document.createElement("div");
 	todoHeader.classList.add("todo-header");
 
-	// Number badge (DEF-1)
+	// Number badge (DEF-1) — lives in top-bar left
 	if (!ctx.isInbox && todo.number) {
 		const proj = ctx.project || getCurrentProject();
 		if (proj && proj.code) {
@@ -1936,16 +1937,21 @@ function buildTodoCard(todo, ctx) {
 		showTodoDetail(todo, proj);
 	});
 
-	todoHeader.appendChild(todoTitle);
+	// Action buttons grouped on the right of the header row
+	const todoHeaderActions = document.createElement("div");
+	todoHeaderActions.classList.add("todo-header-actions");
 	if (!ctx.isInbox) {
 		const proj = getCurrentProject();
-		if (proj && proj.epics && proj.epics.length > 0) todoHeader.appendChild(epicBtn);
+		if (proj && proj.epics && proj.epics.length > 0) todoHeaderActions.appendChild(epicBtn);
 	}
-	todoHeader.appendChild(commentBtn);
-	todoHeader.appendChild(infoBtn);
-	todoHeader.appendChild(popoutBtn);
-	todoHeader.appendChild(moveBtn);
-	todoHeader.appendChild(btnDelete);
+	todoHeaderActions.appendChild(commentBtn);
+	todoHeaderActions.appendChild(infoBtn);
+	todoHeaderActions.appendChild(popoutBtn);
+	todoHeaderActions.appendChild(moveBtn);
+	todoHeaderActions.appendChild(btnDelete);
+	todoHeader.appendChild(todoHeaderActions);
+
+	// Title sits below the header row, spanning full card width
 
 	const todoMeta = document.createElement("div");
 	todoMeta.classList.add("todo-meta");
@@ -2154,6 +2160,7 @@ function buildTodoCard(todo, ctx) {
 	todoActionsRow.appendChild(linkBtn);
 
 	todoCard.appendChild(todoHeader);
+	todoCard.appendChild(todoTitle);
 	todoCard.appendChild(todoDescription);
 	todoCard.appendChild(todoMeta);
 	if (hasStackTab && proj?.tools?.length) todoCard.appendChild(toolBadgesRow);
@@ -4451,6 +4458,7 @@ function renderListsTab(project) {
 	const container = document.createElement("div");
 	container.classList.add("lists-tab");
 
+	// ── Header: [+ New List] [sort dropdown] ──────────────
 	const header = document.createElement("div");
 	header.classList.add("lists-tab-header");
 
@@ -4458,12 +4466,59 @@ function renderListsTab(project) {
 	addBtn.classList.add("lists-add-btn");
 	addBtn.textContent = "+ New List";
 	addBtn.addEventListener("click", () => {
-		project.lists.push({ id: self.crypto.randomUUID(), title: "New List", collapsed: false, items: [] });
+		project.lists.push({
+			id: self.crypto.randomUUID(),
+			title: "New List",
+			collapsed: false,
+			items: [],
+			createdAt: Date.now(),
+			updatedAt: Date.now(),
+		});
 		saveProjects();
 		renderTodos();
 	});
+
+	const sortSelect = document.createElement("select");
+	sortSelect.classList.add("lists-sort-select");
+	[
+		{ value: "default",     label: "Manual order" },
+		{ value: "az",          label: "A → Z" },
+		{ value: "za",          label: "Z → A" },
+		{ value: "newest",      label: "Newest first" },
+		{ value: "oldest",      label: "Oldest first" },
+		{ value: "updated",     label: "Recently updated" },
+		{ value: "progress-hi", label: "Most complete" },
+		{ value: "progress-lo", label: "Least complete" },
+		{ value: "size-hi",     label: "Most items" },
+		{ value: "size-lo",     label: "Fewest items" },
+	].forEach(({ value, label }) => {
+		const opt = document.createElement("option");
+		opt.value = value;
+		opt.textContent = label;
+		if (value === listSortBy) opt.selected = true;
+		sortSelect.appendChild(opt);
+	});
+	sortSelect.addEventListener("change", () => {
+		listSortBy = sortSelect.value;
+		renderTodos();
+	});
+
 	header.appendChild(addBtn);
+	header.appendChild(sortSelect);
 	container.appendChild(header);
+
+	// ── Sort lists ─────────────────────────────────────────
+	const pct = l => l.items.length ? l.items.filter(i => i.checked).length / l.items.length : -1;
+	let sortedLists = [...project.lists];
+	if      (listSortBy === "az")          sortedLists.sort((a, b) => a.title.localeCompare(b.title));
+	else if (listSortBy === "za")          sortedLists.sort((a, b) => b.title.localeCompare(a.title));
+	else if (listSortBy === "newest")      sortedLists.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+	else if (listSortBy === "oldest")      sortedLists.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+	else if (listSortBy === "updated")     sortedLists.sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+	else if (listSortBy === "progress-hi") sortedLists.sort((a, b) => pct(b) - pct(a));
+	else if (listSortBy === "progress-lo") sortedLists.sort((a, b) => pct(a) - pct(b));
+	else if (listSortBy === "size-hi")     sortedLists.sort((a, b) => b.items.length - a.items.length);
+	else if (listSortBy === "size-lo")     sortedLists.sort((a, b) => a.items.length - b.items.length);
 
 	if (project.lists.length === 0) {
 		const empty = document.createElement("div");
@@ -4472,12 +4527,12 @@ function renderListsTab(project) {
 		container.appendChild(empty);
 	}
 
-	project.lists.forEach((list, listIdx) => {
+	sortedLists.forEach((list) => {
 		const card = document.createElement("div");
 		card.classList.add("list-card");
 		if (list.collapsed) card.classList.add("list-card--collapsed");
 
-		// Header row
+		// ── Card header row ────────────────────────────────
 		const cardHeader = document.createElement("div");
 		cardHeader.classList.add("list-card-header");
 
@@ -4495,7 +4550,8 @@ function renderListsTab(project) {
 		titleEl.classList.add("list-card-title");
 		titleEl.textContent = list.title;
 		titleEl.title = "Double-click to rename";
-		titleEl.addEventListener("dblclick", () => {
+
+		function activateRename() {
 			const input = document.createElement("input");
 			input.classList.add("list-card-title-input");
 			input.value = list.title;
@@ -4503,7 +4559,8 @@ function renderListsTab(project) {
 			input.focus();
 			input.select();
 			function saveTitle() {
-				list.title = input.value.trim() || list.title;
+				const val = input.value.trim();
+				if (val) { list.title = val; list.updatedAt = Date.now(); }
 				saveProjects();
 				renderTodos();
 			}
@@ -4512,12 +4569,50 @@ function renderListsTab(project) {
 				if (e.key === "Enter") input.blur();
 				if (e.key === "Escape") renderTodos();
 			});
-		});
+		}
+		titleEl.addEventListener("dblclick", (e) => { e.stopPropagation(); activateRename(); });
 
 		const countBadge = document.createElement("span");
 		countBadge.classList.add("list-card-count");
 		const done = list.items.filter(i => i.checked).length;
 		if (list.items.length) countBadge.textContent = `${done}/${list.items.length}`;
+
+		// Rename button
+		const renameBtn = document.createElement("button");
+		renameBtn.classList.add("list-card-action-btn");
+		renameBtn.title = "Rename list";
+		renameBtn.innerHTML = '<span class="material-symbols-rounded" style="font-size:0.85rem">edit</span>';
+		renameBtn.addEventListener("click", (e) => { e.stopPropagation(); activateRename(); });
+
+		// Move up / down (manual order only)
+		const origIdx = project.lists.indexOf(list);
+		const moveUpBtn = document.createElement("button");
+		moveUpBtn.classList.add("list-card-action-btn", "list-card-move-btn");
+		moveUpBtn.title = "Move up";
+		moveUpBtn.innerHTML = '<span class="material-symbols-rounded" style="font-size:0.85rem">arrow_upward</span>';
+		moveUpBtn.disabled = origIdx === 0;
+		moveUpBtn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			if (origIdx > 0) {
+				[project.lists[origIdx], project.lists[origIdx - 1]] = [project.lists[origIdx - 1], project.lists[origIdx]];
+				saveProjects();
+				renderTodos();
+			}
+		});
+
+		const moveDownBtn = document.createElement("button");
+		moveDownBtn.classList.add("list-card-action-btn", "list-card-move-btn");
+		moveDownBtn.title = "Move down";
+		moveDownBtn.innerHTML = '<span class="material-symbols-rounded" style="font-size:0.85rem">arrow_downward</span>';
+		moveDownBtn.disabled = origIdx === project.lists.length - 1;
+		moveDownBtn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			if (origIdx < project.lists.length - 1) {
+				[project.lists[origIdx], project.lists[origIdx + 1]] = [project.lists[origIdx + 1], project.lists[origIdx]];
+				saveProjects();
+				renderTodos();
+			}
+		});
 
 		const deleteBtn = document.createElement("button");
 		deleteBtn.classList.add("list-card-delete");
@@ -4525,12 +4620,11 @@ function renderListsTab(project) {
 		deleteBtn.textContent = "✕";
 		deleteBtn.addEventListener("click", (e) => {
 			e.stopPropagation();
-			project.lists.splice(listIdx, 1);
+			project.lists.splice(origIdx, 1);
 			saveProjects();
 			renderTodos();
 		});
 
-		// Click header to toggle collapse
 		cardHeader.addEventListener("click", () => {
 			list.collapsed = !list.collapsed;
 			saveProjects();
@@ -4540,9 +4634,15 @@ function renderListsTab(project) {
 		cardHeader.appendChild(toggleBtn);
 		cardHeader.appendChild(titleEl);
 		cardHeader.appendChild(countBadge);
+		cardHeader.appendChild(renameBtn);
+		if (listSortBy === "default") {
+			cardHeader.appendChild(moveUpBtn);
+			cardHeader.appendChild(moveDownBtn);
+		}
 		cardHeader.appendChild(deleteBtn);
 		card.appendChild(cardHeader);
 
+		// ── Items ──────────────────────────────────────────
 		if (!list.collapsed) {
 			const itemsEl = document.createElement("ul");
 			itemsEl.classList.add("list-card-items");
@@ -4558,9 +4658,9 @@ function renderListsTab(project) {
 				checkbox.addEventListener("change", (e) => {
 					e.stopPropagation();
 					item.checked = checkbox.checked;
+					list.updatedAt = Date.now();
 					li.classList.toggle("list-item--done", item.checked);
 					saveProjects();
-					// Update count badge
 					const doneCount = list.items.filter(i => i.checked).length;
 					countBadge.textContent = list.items.length ? `${doneCount}/${list.items.length}` : "";
 				});
@@ -4577,8 +4677,8 @@ function renderListsTab(project) {
 					input.focus();
 					function saveItemText() {
 						const val = input.value.trim();
-						if (val) item.text = val;
-						else list.items.splice(itemIdx, 1);
+						if (val) { item.text = val; list.updatedAt = Date.now(); }
+						else { list.items.splice(itemIdx, 1); list.updatedAt = Date.now(); }
 						saveProjects();
 						renderTodos();
 					}
@@ -4596,6 +4696,7 @@ function renderListsTab(project) {
 				delItem.addEventListener("click", (e) => {
 					e.stopPropagation();
 					list.items.splice(itemIdx, 1);
+					list.updatedAt = Date.now();
 					saveProjects();
 					renderTodos();
 				});
@@ -4618,6 +4719,7 @@ function renderListsTab(project) {
 				const text = addInput.value.trim();
 				if (!text) return;
 				list.items.push({ id: self.crypto.randomUUID(), text, checked: false });
+				list.updatedAt = Date.now();
 				saveProjects();
 				renderTodos();
 			}
