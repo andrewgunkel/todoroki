@@ -42,8 +42,118 @@ let sortBy = "default"; // default | priority | createdAt | updatedAt | dueDate
 let sortDir = "asc"; // asc | desc
 let listSortBy = "default"; // default | az | za | newest | oldest | updated | progress-hi | progress-lo | size-hi | size-lo
 
+let currentEmailThreadId = null;
+let gmailToken = null;       // ephemeral access token
+let gmailTokenExpiry = 0;
+let gmailThreadCache = {};   // { [threadId]: fullThreadData }
+
 let currentUser = null;
 const guestMode = !!(localStorage.getItem("todoroki_guest") === "true");
+
+// ── Multi-account session store ──
+function getStoredAccounts() {
+	try { return JSON.parse(localStorage.getItem("todoroki_accounts") || "{}"); }
+	catch { return {}; }
+}
+function setStoredAccounts(accs) {
+	localStorage.setItem("todoroki_accounts", JSON.stringify(accs));
+}
+function getActiveAccountId() {
+	return localStorage.getItem("todoroki_active_account_id") || null;
+}
+function setActiveAccountId(id) {
+	localStorage.setItem("todoroki_active_account_id", id);
+}
+function upsertStoredAccount(user, session) {
+	if (!user || !session) return;
+	const accs = getStoredAccounts();
+	accs[user.id] = {
+		...(accs[user.id] || {}),
+		email: user.email || "",
+		name: user.user_metadata?.full_name || user.user_metadata?.name || user.email || "User",
+		accessToken: session.access_token,
+		refreshToken: session.refresh_token,
+		expiresAt: (session.expires_at || 0) * 1000,
+	};
+	setStoredAccounts(accs);
+}
+function removeStoredAccount(userId) {
+	const accs = getStoredAccounts();
+	delete accs[userId];
+	setStoredAccounts(accs);
+}
+
+async function switchAccount(userId) {
+	if (userId === currentUser?.id) return;
+	const accs = getStoredAccounts();
+	const target = accs[userId];
+	if (!target) return;
+
+	// Persist current session tokens before switching
+	const { data: { session: curSession } } = await supabase.auth.getSession();
+	if (curSession && currentUser) upsertStoredAccount(currentUser, curSession);
+
+	// Restore the target session
+	const { data, error } = await supabase.auth.setSession({
+		access_token: target.accessToken,
+		refresh_token: target.refreshToken,
+	});
+	if (error || !data.session) {
+		removeStoredAccount(userId);
+		document.querySelector(".user-settings-popup")?.remove();
+		const anchor = document.querySelector(".sidebar-user-row");
+		if (anchor) openUserSettings(anchor, currentUser);
+		alert("That account session has expired — it has been removed. Please use \"Add account\" to sign in again.");
+		return;
+	}
+
+	setActiveAccountId(userId);
+	currentUser = data.user;
+
+	// Reset per-account state
+	currentProjectId = null;
+	columns.length = 0;
+	userPrefs = { theme: "light", avatarColor: null, displayName: "", generalNotes: [], anthropicApiKey: null, icalToken: null, emailPrefs: { clientId: null, label: "Todoroki", threads: {} } };
+
+	try {
+		await loadUserPrefs();
+		applyTheme(userPrefs.theme);
+		await loadFromSupabase();
+	} catch (err) {
+		console.error("Failed to load data for switched account:", err);
+	}
+
+	if (projects.length === 0) {
+		const dp = new Project("Default", "");
+		dp.epics = []; dp.resources = { notes: "", html: "", files: [] };
+		dp.code = "DEF"; dp.todoCounter = 0;
+		dp.tabs = defaultProjectTabs(); dp.notes = []; dp.tools = []; dp.lists = [];
+		projects.push(dp);
+		currentProjectId = dp.id;
+		saveProjects();
+	}
+
+	document.querySelector(".user-settings-popup")?.remove();
+	currentView = "overview";
+	renderProjects();
+	renderOverview();
+}
+
+async function addAccount() {
+	const { data: { session } } = await supabase.auth.getSession();
+	if (session && currentUser) {
+		upsertStoredAccount(currentUser, session);
+		setActiveAccountId(currentUser.id);
+	}
+	sessionStorage.setItem("todoroki_adding_account", currentUser?.id || "");
+	signInWithGoogle();
+}
+
+async function signOutAllAccounts() {
+	localStorage.removeItem("todoroki_accounts");
+	localStorage.removeItem("todoroki_active_account_id");
+	signOut();
+}
 
 let selectedTodos = new Set(); // set of todo IDs currently selected
 let dragState = null; // { todoIds, source: "project"|"inbox", projectId }
@@ -65,7 +175,7 @@ let assistantHistory = []; // persists for the session
 let lastRemoteSync = 0; // timestamp of the last successful pull from Supabase
 
 // Cross-device user preferences — loaded from Supabase after auth
-let userPrefs = { theme: "light", avatarColor: null, displayName: "", generalNotes: [], anthropicApiKey: null, icalToken: null };
+let userPrefs = { theme: "light", avatarColor: null, displayName: "", generalNotes: [], anthropicApiKey: null, icalToken: null, emailPrefs: { clientId: null, label: "Todoroki", threads: {} } };
 
 function showColumnDeleteModal(col) {
 	const others = columns.filter(c => c.id !== col.id);
@@ -621,6 +731,8 @@ async function loadUserPrefs() {
 		userPrefs.generalNotes = data.general_notes || [];
 		userPrefs.anthropicApiKey = data.anthropic_api_key || null;
 		userPrefs.icalToken       = data.ical_token || null;
+		userPrefs.emailPrefs = data.email_prefs || { clientId: null, label: "Todoroki", threads: {} };
+		if (!userPrefs.emailPrefs.threads) userPrefs.emailPrefs.threads = {};
 	} else {
 		// First login on this device — migrate from localStorage then save
 		const localTheme = localStorage.getItem("theme");
@@ -651,6 +763,7 @@ async function saveUserPrefs() {
 				general_notes:    userPrefs.generalNotes,
 				anthropic_api_key: userPrefs.anthropicApiKey || null,
 				ical_token:        userPrefs.icalToken || null,
+				email_prefs:       userPrefs.emailPrefs,
 				updated_at:        new Date().toISOString(),
 			},
 			{ onConflict: "user_id" }
@@ -669,6 +782,14 @@ async function saveUserPrefs() {
 			));
 		}
 		if (error) throw error;
+		// Keep the accounts store in sync with the latest avatar color
+		if (userPrefs.avatarColor) {
+			const accs = getStoredAccounts();
+			if (accs[currentUser.id]) {
+				accs[currentUser.id].avatarColor = userPrefs.avatarColor;
+				setStoredAccounts(accs);
+			}
+		}
 	} catch (err) {
 		console.error("Supabase prefs sync error:", err);
 	}
@@ -1099,6 +1220,7 @@ async function reloadFromSupabase() {
 		if (currentView === "inbox") renderInbox();
 		else if (currentView === "overview") renderOverview();
 		else if (currentView === "shuffle") renderShuffle();
+		else if (currentView === "email") renderEmailTab();
 		else renderTodos();
 	} catch (err) {
 		console.error("Failed to reload from Supabase:", err);
@@ -1147,6 +1269,8 @@ function pushViewUrl() {
 		path = "/inbox";
 	} else if (currentView === "shuffle") {
 		path = "/shuffle";
+	} else if (currentView === "email") {
+		path = "/email";
 	} else {
 		const project = getCurrentProject();
 		if (!project) {
@@ -1172,6 +1296,8 @@ function navigateToPath(pathname) {
 		currentView = "inbox";
 	} else if (parts[0] === "shuffle") {
 		currentView = "shuffle";
+	} else if (parts[0] === "email") {
+		currentView = "email";
 	} else {
 		const project = projects.find(p => getProjectSlug(p) === parts[0]);
 		if (project) {
@@ -1199,6 +1325,7 @@ window.addEventListener("popstate", () => {
 	if (currentView === "inbox") renderInbox();
 	else if (currentView === "overview") renderOverview();
 	else if (currentView === "shuffle") renderShuffle();
+	else if (currentView === "email") renderEmailTab();
 	else renderTodos();
 	checkDetailQuery();
 });
@@ -1211,6 +1338,11 @@ supabase.auth.getSession().then(async ({ data: { session } }) => {
 	currentUser = session?.user ?? null;
 
 	if (currentUser) {
+		// Register this session in the multi-account store
+		upsertStoredAccount(currentUser, session);
+		setActiveAccountId(currentUser.id);
+		sessionStorage.removeItem("todoroki_adding_account");
+
 		try {
 			await loadUserPrefs();
 			applyTheme(userPrefs.theme); // override the localStorage-cached theme
@@ -1259,6 +1391,7 @@ supabase.auth.getSession().then(async ({ data: { session } }) => {
 	if (currentView === "inbox") renderInbox();
 	else if (currentView === "overview") renderOverview();
 	else if (currentView === "shuffle") renderShuffle();
+	else if (currentView === "email") renderEmailTab();
 	else renderTodos();
 	checkDetailQuery();
 });
@@ -5160,6 +5293,687 @@ function checkDetailQuery() {
 	}
 }
 
+/* ======================
+   GMAIL HELPERS
+====================== */
+
+function loadGIS() {
+	return new Promise((resolve, reject) => {
+		if (window.google?.accounts?.oauth2) { resolve(); return; }
+		if (document.querySelector('script[src*="accounts.google.com/gsi"]')) {
+			const poll = setInterval(() => {
+				if (window.google?.accounts?.oauth2) { clearInterval(poll); resolve(); }
+			}, 100);
+			setTimeout(() => { clearInterval(poll); reject(new Error("GIS timeout")); }, 10000);
+			return;
+		}
+		const s = document.createElement("script");
+		s.src = "https://accounts.google.com/gsi/client";
+		s.onload = () => {
+			const poll = setInterval(() => {
+				if (window.google?.accounts?.oauth2) { clearInterval(poll); resolve(); }
+			}, 50);
+		};
+		s.onerror = reject;
+		document.head.appendChild(s);
+	});
+}
+
+async function requestGmailToken(clientId) {
+	await loadGIS();
+	return new Promise((resolve, reject) => {
+		const client = google.accounts.oauth2.initTokenClient({
+			client_id: clientId,
+			scope: "https://www.googleapis.com/auth/gmail.readonly",
+			callback: (resp) => {
+				if (resp.error) { reject(new Error(resp.error)); return; }
+				gmailToken = resp.access_token;
+				gmailTokenExpiry = Date.now() + (resp.expires_in - 60) * 1000;
+				resolve();
+			},
+		});
+		client.requestAccessToken();
+	});
+}
+
+function gmailFetch(path, params = {}) {
+	const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`);
+	Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+	return fetch(url, { headers: { Authorization: `Bearer ${gmailToken}` } }).then(r => r.json());
+}
+
+function decodeGmailBody(encoded) {
+	if (!encoded) return "";
+	try {
+		const base64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
+		return decodeURIComponent(escape(atob(base64)));
+	} catch { return ""; }
+}
+
+function extractMessageText(payload) {
+	if (!payload) return "";
+	if (payload.mimeType === "text/plain" && payload.body?.data)
+		return decodeGmailBody(payload.body.data);
+	if (payload.mimeType === "text/html" && payload.body?.data) {
+		const d = document.createElement("div");
+		d.innerHTML = decodeGmailBody(payload.body.data);
+		return d.textContent || "";
+	}
+	if (payload.parts) {
+		const plain = payload.parts.find(p => p.mimeType === "text/plain");
+		if (plain?.body?.data) return decodeGmailBody(plain.body.data);
+		const html = payload.parts.find(p => p.mimeType === "text/html");
+		if (html?.body?.data) {
+			const d = document.createElement("div");
+			d.innerHTML = decodeGmailBody(html.body.data);
+			return d.textContent || "";
+		}
+		for (const part of payload.parts) {
+			const t = extractMessageText(part);
+			if (t) return t;
+		}
+	}
+	return "";
+}
+
+function emailHeader(headers, name) {
+	return headers?.find(h => h.name.toLowerCase() === name.toLowerCase())?.value || "";
+}
+
+function formatEmailDate(internalDate) {
+	if (!internalDate) return "";
+	const d = new Date(parseInt(internalDate));
+	const diffMs = Date.now() - d;
+	const diffDays = Math.floor(diffMs / 86400000);
+	if (diffDays === 0) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+	if (diffDays < 7) return d.toLocaleDateString([], { weekday: "short" });
+	if (d.getFullYear() === new Date().getFullYear())
+		return d.toLocaleDateString([], { month: "short", day: "numeric" });
+	return d.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+}
+
+function getEmailThreadMeta(threadId) {
+	if (!userPrefs.emailPrefs.threads[threadId])
+		userPrefs.emailPrefs.threads[threadId] = { notes: "", tags: [], linkedTodoIds: [] };
+	return userPrefs.emailPrefs.threads[threadId];
+}
+
+function saveEmailThreadMeta(threadId) {
+	saveUserPrefs();
+}
+
+/* ======================
+   EMAIL TAB
+====================== */
+
+function renderEmailTab() {
+	addTodoBtn.style.display = "none";
+	todoContainer.innerHTML = "";
+	todoContainer.classList.remove("swimlane-mode", "overview-view");
+	sortBarContainer.innerHTML = "";
+	selectionBarContainer.innerHTML = "";
+	projectTabsContainer.innerHTML = "";
+	projectCodeBadge.style.display = "none";
+	projectTitle.textContent = "Email";
+	setViewHeaderIcon("mail", true);
+
+	// Guest mode
+	if (guestMode) {
+		const gate = document.createElement("div");
+		gate.classList.add("assistant-no-key");
+		const ic = document.createElement("span");
+		ic.classList.add("material-symbols-rounded");
+		ic.textContent = "mail";
+		const msg = document.createElement("p");
+		msg.textContent = "Log in to connect your Gmail inbox.";
+		const btn = document.createElement("button");
+		btn.classList.add("overview-ai-settings-btn");
+		btn.textContent = "Log in";
+		btn.addEventListener("click", () => { localStorage.removeItem("todoroki_guest"); window.location.reload(); });
+		gate.append(ic, msg, btn);
+		todoContainer.appendChild(gate);
+		return;
+	}
+
+	const prefs = userPrefs.emailPrefs;
+
+	// ── Setup screen ──────────────────────────────────────────
+	if (!prefs.clientId) {
+		const setup = document.createElement("div");
+		setup.classList.add("email-setup");
+
+		const setupIcon = document.createElement("span");
+		setupIcon.classList.add("material-symbols-rounded", "email-setup-icon");
+		setupIcon.textContent = "mail";
+
+		const setupTitle = document.createElement("h2");
+		setupTitle.classList.add("email-setup-title");
+		setupTitle.textContent = "Connect Gmail";
+
+		const setupDesc = document.createElement("p");
+		setupDesc.classList.add("email-setup-desc");
+		setupDesc.innerHTML = `
+			Label threads in Gmail with a label (e.g. <strong>Todoroki</strong>), then connect to see them here.
+			You need a <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud</a>
+			OAuth 2.0 Client ID with the Gmail API enabled and your app domain added as an authorized origin.
+		`;
+
+		const form = document.createElement("div");
+		form.classList.add("email-setup-form");
+
+		const clientLabel = document.createElement("label");
+		clientLabel.classList.add("email-setup-label");
+		clientLabel.textContent = "Google OAuth Client ID";
+		const clientInput = document.createElement("input");
+		clientInput.classList.add("email-setup-input");
+		clientInput.placeholder = "xxxx.apps.googleusercontent.com";
+		clientInput.type = "text";
+
+		const labelLabel = document.createElement("label");
+		labelLabel.classList.add("email-setup-label");
+		labelLabel.textContent = "Gmail label to sync";
+		const labelInput = document.createElement("input");
+		labelInput.classList.add("email-setup-input");
+		labelInput.placeholder = "Todoroki";
+		labelInput.value = prefs.label || "Todoroki";
+		labelInput.type = "text";
+
+		const connectBtn = document.createElement("button");
+		connectBtn.classList.add("email-connect-btn");
+		connectBtn.textContent = "Connect Gmail";
+		connectBtn.addEventListener("click", async () => {
+			const cid = clientInput.value.trim();
+			const lbl = labelInput.value.trim() || "Todoroki";
+			if (!cid) { clientInput.focus(); return; }
+			connectBtn.disabled = true;
+			connectBtn.textContent = "Connecting…";
+			try {
+				userPrefs.emailPrefs.clientId = cid;
+				userPrefs.emailPrefs.label = lbl;
+				await requestGmailToken(cid);
+				await saveUserPrefs();
+				renderEmailTab();
+			} catch (err) {
+				connectBtn.disabled = false;
+				connectBtn.textContent = "Connect Gmail";
+				alert("Connection failed: " + (err.message || "unknown error"));
+			}
+		});
+
+		form.append(clientLabel, clientInput, labelLabel, labelInput, connectBtn);
+		setup.append(setupIcon, setupTitle, setupDesc, form);
+		todoContainer.appendChild(setup);
+		return;
+	}
+
+	// ── Main email layout ────────────────────────────────────
+	const layout = document.createElement("div");
+	layout.classList.add("email-layout");
+
+	// Left: thread list
+	const listPane = document.createElement("div");
+	listPane.classList.add("email-thread-list");
+
+	// List header with label, refresh, disconnect
+	const listHeader = document.createElement("div");
+	listHeader.classList.add("email-list-header");
+
+	const labelChip = document.createElement("span");
+	labelChip.classList.add("email-label-chip");
+	labelChip.innerHTML = `<span class="material-symbols-rounded" style="font-size:0.9rem">label</span> ${prefs.label || "Todoroki"}`;
+
+	const refreshBtn = document.createElement("button");
+	refreshBtn.classList.add("email-icon-btn");
+	refreshBtn.title = "Refresh";
+	refreshBtn.innerHTML = '<span class="material-symbols-rounded" style="font-size:1rem">refresh</span>';
+
+	const settingsBtn = document.createElement("button");
+	settingsBtn.classList.add("email-icon-btn");
+	settingsBtn.title = "Settings / Disconnect";
+	settingsBtn.innerHTML = '<span class="material-symbols-rounded" style="font-size:1rem">settings</span>';
+	settingsBtn.addEventListener("click", () => {
+		if (!confirm(`Disconnect Gmail? This removes your Client ID and label settings.`)) return;
+		userPrefs.emailPrefs = { clientId: null, label: "Todoroki", threads: {} };
+		gmailToken = null;
+		gmailTokenExpiry = 0;
+		gmailThreadCache = {};
+		currentEmailThreadId = null;
+		saveUserPrefs();
+		renderEmailTab();
+	});
+
+	listHeader.append(labelChip, refreshBtn, settingsBtn);
+	listPane.appendChild(listHeader);
+
+	// Thread list body (loading state initially)
+	const listBody = document.createElement("div");
+	listBody.classList.add("email-list-body");
+	listPane.appendChild(listBody);
+
+	// Right: detail pane
+	const detailPane = document.createElement("div");
+	detailPane.classList.add("email-detail-pane");
+
+	layout.append(listPane, detailPane);
+	todoContainer.appendChild(layout);
+
+	// ── Render thread detail ──────────────────────────────────
+	function renderThreadDetail(thread) {
+		detailPane.innerHTML = "";
+		if (!thread) {
+			const placeholder = document.createElement("div");
+			placeholder.classList.add("email-detail-placeholder");
+			const ph_ic = document.createElement("span");
+			ph_ic.classList.add("material-symbols-rounded");
+			ph_ic.style.fontSize = "2.5rem";
+			ph_ic.style.opacity = "0.2";
+			ph_ic.textContent = "mail";
+			const ph_txt = document.createElement("p");
+			ph_txt.style.opacity = "0.4";
+			ph_txt.textContent = "Select a thread to read";
+			placeholder.append(ph_ic, ph_txt);
+			detailPane.appendChild(placeholder);
+			return;
+		}
+
+		const messages = thread.messages || [];
+		const firstMsg = messages[0];
+		const subject = emailHeader(firstMsg?.payload?.headers, "subject") || "(No subject)";
+
+		// Detail header
+		const dHeader = document.createElement("div");
+		dHeader.classList.add("email-detail-header");
+		const subjEl = document.createElement("h2");
+		subjEl.classList.add("email-detail-subject");
+		subjEl.textContent = subject;
+		dHeader.appendChild(subjEl);
+		detailPane.appendChild(dHeader);
+
+		// Messages
+		const msgsEl = document.createElement("div");
+		msgsEl.classList.add("email-messages");
+
+		messages.forEach((msg, idx) => {
+			const from = emailHeader(msg.payload?.headers, "from");
+			const date = formatEmailDate(msg.internalDate);
+			const body = extractMessageText(msg.payload);
+			const isLast = idx === messages.length - 1;
+
+			const msgEl = document.createElement("div");
+			msgEl.classList.add("email-message");
+			if (!isLast) msgEl.classList.add("email-message--collapsed");
+
+			const msgHead = document.createElement("div");
+			msgHead.classList.add("email-message-head");
+
+			const fromEl = document.createElement("span");
+			fromEl.classList.add("email-message-from");
+			fromEl.textContent = from;
+
+			const dateEl = document.createElement("span");
+			dateEl.classList.add("email-message-date");
+			dateEl.textContent = date;
+
+			msgHead.append(fromEl, dateEl);
+			msgEl.appendChild(msgHead);
+
+			if (isLast || !msgEl.classList.contains("email-message--collapsed")) {
+				const bodyEl = document.createElement("div");
+				bodyEl.classList.add("email-message-body");
+				bodyEl.textContent = body.trim().slice(0, 2000) + (body.length > 2000 ? "\n…" : "");
+				msgEl.appendChild(bodyEl);
+			} else {
+				// Collapsed: show snippet on click
+				const snippetEl = document.createElement("div");
+				snippetEl.classList.add("email-message-snippet");
+				snippetEl.textContent = body.trim().slice(0, 100) + "…";
+				msgEl.appendChild(snippetEl);
+				msgHead.style.cursor = "pointer";
+				msgHead.addEventListener("click", () => {
+					msgEl.classList.remove("email-message--collapsed");
+					snippetEl.remove();
+					const bodyEl = document.createElement("div");
+					bodyEl.classList.add("email-message-body");
+					bodyEl.textContent = body.trim().slice(0, 2000) + (body.length > 2000 ? "\n…" : "");
+					msgEl.appendChild(bodyEl);
+				});
+			}
+
+			msgsEl.appendChild(msgEl);
+		});
+		detailPane.appendChild(msgsEl);
+
+		// ── App metadata ──────────────────────────────────────
+		const meta = getEmailThreadMeta(thread.id);
+
+		const metaSection = document.createElement("div");
+		metaSection.classList.add("email-meta");
+
+		const metaTitle = document.createElement("div");
+		metaTitle.classList.add("email-meta-title");
+		metaTitle.innerHTML = '<span class="material-symbols-rounded" style="font-size:0.95rem">edit_note</span> Notes & Links';
+		metaSection.appendChild(metaTitle);
+
+		// Notes
+		const notesLabel = document.createElement("label");
+		notesLabel.classList.add("email-meta-label");
+		notesLabel.textContent = "Notes";
+		const notesArea = document.createElement("textarea");
+		notesArea.classList.add("email-notes-area");
+		notesArea.placeholder = "Add notes about this thread…";
+		notesArea.value = meta.notes || "";
+		notesArea.addEventListener("input", () => {
+			meta.notes = notesArea.value;
+			saveEmailThreadMeta(thread.id);
+		});
+		metaSection.append(notesLabel, notesArea);
+
+		// Tags
+		const tagsLabel = document.createElement("label");
+		tagsLabel.classList.add("email-meta-label");
+		tagsLabel.textContent = "Tags";
+		const tagsRow = document.createElement("div");
+		tagsRow.classList.add("email-tags-row");
+
+		function renderTags() {
+			tagsRow.innerHTML = "";
+			(meta.tags || []).forEach(tag => {
+				const chip = document.createElement("span");
+				chip.classList.add("email-tag-chip");
+				chip.textContent = "#" + tag;
+				const rem = document.createElement("button");
+				rem.classList.add("email-tag-remove");
+				rem.textContent = "×";
+				rem.addEventListener("click", () => {
+					meta.tags = meta.tags.filter(t => t !== tag);
+					saveEmailThreadMeta(thread.id);
+					renderTags();
+				});
+				chip.appendChild(rem);
+				tagsRow.appendChild(chip);
+			});
+			const tagInput = document.createElement("input");
+			tagInput.classList.add("email-tag-input");
+			tagInput.placeholder = "+ tag";
+			tagInput.addEventListener("keydown", (e) => {
+				if (e.key === "Enter" || e.key === ",") {
+					e.preventDefault();
+					const val = tagInput.value.trim().replace(/^#/, "").replace(/,$/, "").toLowerCase();
+					if (val && !(meta.tags || []).includes(val)) {
+						if (!meta.tags) meta.tags = [];
+						meta.tags.push(val);
+						saveEmailThreadMeta(thread.id);
+					}
+					renderTags();
+				}
+			});
+			tagsRow.appendChild(tagInput);
+		}
+		renderTags();
+		metaSection.append(tagsLabel, tagsRow);
+
+		// Linked todos
+		const todosLabel = document.createElement("label");
+		todosLabel.classList.add("email-meta-label");
+		todosLabel.textContent = "Linked Todos";
+		const todosArea = document.createElement("div");
+		todosArea.classList.add("email-linked-todos");
+
+		function renderLinkedTodos() {
+			todosArea.innerHTML = "";
+			const allTodos = projects.flatMap(p => p.todos.map(t => ({ todo: t, project: p })));
+			(meta.linkedTodoIds || []).forEach(tid => {
+				const found = allTodos.find(({ todo }) => todo.id === tid);
+				if (!found) return;
+				const { todo, project } = found;
+				const row = document.createElement("div");
+				row.classList.add("email-linked-todo-row");
+				const badge = document.createElement("span");
+				badge.classList.add("todo-number-badge");
+				badge.textContent = `${project.code}-${todo.number}`;
+				const title = document.createElement("span");
+				title.classList.add("email-linked-todo-title");
+				title.textContent = todo.title || "Untitled";
+				const remBtn = document.createElement("button");
+				remBtn.classList.add("email-tag-remove");
+				remBtn.textContent = "×";
+				remBtn.addEventListener("click", () => {
+					meta.linkedTodoIds = meta.linkedTodoIds.filter(id => id !== tid);
+					saveEmailThreadMeta(thread.id);
+					renderLinkedTodos();
+				});
+				row.append(badge, title, remBtn);
+				todosArea.appendChild(row);
+			});
+
+			// Picker
+			const allTodoOptions = projects.flatMap(p =>
+				p.todos.filter(t => !(meta.linkedTodoIds || []).includes(t.id))
+					.map(t => ({ todo: t, project: p }))
+			);
+			if (allTodoOptions.length) {
+				const picker = document.createElement("select");
+				picker.classList.add("email-todo-picker");
+				const defOpt = document.createElement("option");
+				defOpt.value = "";
+				defOpt.textContent = "+ Link a todo…";
+				picker.appendChild(defOpt);
+				allTodoOptions.forEach(({ todo, project }) => {
+					const opt = document.createElement("option");
+					opt.value = todo.id;
+					opt.textContent = `${project.code}-${todo.number} · ${todo.title || "Untitled"}`;
+					picker.appendChild(opt);
+				});
+				picker.addEventListener("change", () => {
+					const id = picker.value;
+					if (!id) return;
+					if (!meta.linkedTodoIds) meta.linkedTodoIds = [];
+					meta.linkedTodoIds.push(id);
+					saveEmailThreadMeta(thread.id);
+					renderLinkedTodos();
+				});
+				todosArea.appendChild(picker);
+			}
+		}
+		renderLinkedTodos();
+		metaSection.append(todosLabel, todosArea);
+
+		// Linked notes (overview general notes + project notes)
+		const notesLinkLabel = document.createElement("label");
+		notesLinkLabel.classList.add("email-meta-label");
+		notesLinkLabel.textContent = "Linked Notes";
+		const linkedNotesArea = document.createElement("div");
+		linkedNotesArea.classList.add("email-linked-todos");
+
+		function renderLinkedNotes() {
+			linkedNotesArea.innerHTML = "";
+			const allNotes = [
+				...userPrefs.generalNotes.map(n => ({ note: n, label: "Overview" })),
+				...projects.flatMap(p => (p.notes || []).map(n => ({ note: n, label: p.title }))),
+			];
+			(meta.linkedNoteIds || []).forEach(nid => {
+				const found = allNotes.find(({ note }) => note.id === nid);
+				if (!found) return;
+				const { note, label } = found;
+				const row = document.createElement("div");
+				row.classList.add("email-linked-todo-row");
+				const src = document.createElement("span");
+				src.classList.add("email-note-src");
+				src.textContent = label;
+				const title = document.createElement("span");
+				title.classList.add("email-linked-todo-title");
+				title.textContent = (note.content || "").slice(0, 60) || "Untitled note";
+				const remBtn = document.createElement("button");
+				remBtn.classList.add("email-tag-remove");
+				remBtn.textContent = "×";
+				remBtn.addEventListener("click", () => {
+					meta.linkedNoteIds = (meta.linkedNoteIds || []).filter(id => id !== nid);
+					saveEmailThreadMeta(thread.id);
+					renderLinkedNotes();
+				});
+				row.append(src, title, remBtn);
+				linkedNotesArea.appendChild(row);
+			});
+			const availableNotes = allNotes.filter(({ note }) => !(meta.linkedNoteIds || []).includes(note.id));
+			if (availableNotes.length) {
+				const picker = document.createElement("select");
+				picker.classList.add("email-todo-picker");
+				const defOpt = document.createElement("option");
+				defOpt.value = "";
+				defOpt.textContent = "+ Link a note…";
+				picker.appendChild(defOpt);
+				availableNotes.forEach(({ note, label }) => {
+					const opt = document.createElement("option");
+					opt.value = note.id;
+					opt.textContent = `${label} · ${(note.content || "").slice(0, 50) || "Untitled"}`;
+					picker.appendChild(opt);
+				});
+				picker.addEventListener("change", () => {
+					const id = picker.value;
+					if (!id) return;
+					if (!meta.linkedNoteIds) meta.linkedNoteIds = [];
+					meta.linkedNoteIds.push(id);
+					saveEmailThreadMeta(thread.id);
+					renderLinkedNotes();
+				});
+				linkedNotesArea.appendChild(picker);
+			}
+		}
+		renderLinkedNotes();
+		metaSection.append(notesLinkLabel, linkedNotesArea);
+
+		detailPane.appendChild(metaSection);
+	}
+
+	renderThreadDetail(null);
+
+	// ── Fetch threads ────────────────────────────────────────
+	async function loadThreads() {
+		listBody.innerHTML = "";
+		const loading = document.createElement("div");
+		loading.classList.add("email-loading");
+		loading.innerHTML = '<span class="material-symbols-rounded" style="font-size:1.4rem;opacity:0.4">hourglass_empty</span><span>Loading…</span>';
+		listBody.appendChild(loading);
+
+		// Ensure token
+		if (!gmailToken || Date.now() > gmailTokenExpiry) {
+			try {
+				await requestGmailToken(prefs.clientId);
+			} catch (err) {
+				listBody.innerHTML = "";
+				const errEl = document.createElement("div");
+				errEl.classList.add("email-loading");
+				errEl.textContent = "Authentication failed. Check your Client ID.";
+				listBody.appendChild(errEl);
+				return;
+			}
+		}
+
+		// Find label ID from name
+		let labelId = null;
+		try {
+			const labelData = await gmailFetch("labels");
+			const found = (labelData.labels || []).find(l =>
+				l.name.toLowerCase() === (prefs.label || "Todoroki").toLowerCase()
+			);
+			labelId = found?.id;
+		} catch {}
+
+		if (!labelId) {
+			listBody.innerHTML = "";
+			const errEl = document.createElement("div");
+			errEl.classList.add("email-loading");
+			errEl.textContent = `Label "${prefs.label || "Todoroki"}" not found in Gmail. Create it and apply it to threads.`;
+			listBody.appendChild(errEl);
+			return;
+		}
+
+		// Fetch thread list
+		let threads = [];
+		try {
+			const data = await gmailFetch("threads", { labelIds: labelId, maxResults: 30 });
+			threads = data.threads || [];
+		} catch {
+			listBody.innerHTML = "";
+			const errEl = document.createElement("div");
+			errEl.classList.add("email-loading");
+			errEl.textContent = "Failed to load threads. Try refreshing.";
+			listBody.appendChild(errEl);
+			return;
+		}
+
+		listBody.innerHTML = "";
+
+		if (!threads.length) {
+			const empty = document.createElement("div");
+			empty.classList.add("email-loading");
+			empty.textContent = `No threads with label "${prefs.label}".`;
+			listBody.appendChild(empty);
+			return;
+		}
+
+		// Render thread rows (fetch metadata for each)
+		for (const { id } of threads) {
+			const row = document.createElement("div");
+			row.classList.add("email-thread-row");
+			row.dataset.threadId = id;
+			if (id === currentEmailThreadId) row.classList.add("active");
+			row.innerHTML = '<div class="email-thread-loading">…</div>';
+			listBody.appendChild(row);
+
+			// Fetch thread metadata (use cache if available)
+			if (!gmailThreadCache[id]) {
+				try {
+					gmailThreadCache[id] = await gmailFetch(`threads/${id}`, { format: "full" });
+				} catch { continue; }
+			}
+			const thread = gmailThreadCache[id];
+			const msgs = thread.messages || [];
+			const first = msgs[0];
+			const subject = emailHeader(first?.payload?.headers, "subject") || "(No subject)";
+			const from = emailHeader(first?.payload?.headers, "from").replace(/<[^>]+>/, "").trim();
+			const last = msgs[msgs.length - 1];
+			const date = formatEmailDate(last?.internalDate);
+			const snippet = thread.snippet || "";
+			const hasMeta = !!(userPrefs.emailPrefs.threads[id]);
+
+			row.innerHTML = "";
+			row.classList.toggle("email-thread-row--meta", hasMeta);
+
+			const rowTop = document.createElement("div");
+			rowTop.classList.add("email-thread-row-top");
+			const subjectEl = document.createElement("span");
+			subjectEl.classList.add("email-thread-subject");
+			subjectEl.textContent = subject;
+			const dateEl = document.createElement("span");
+			dateEl.classList.add("email-thread-date");
+			dateEl.textContent = date;
+			rowTop.append(subjectEl, dateEl);
+
+			const fromEl = document.createElement("div");
+			fromEl.classList.add("email-thread-from");
+			fromEl.textContent = from;
+
+			const snippetEl = document.createElement("div");
+			snippetEl.classList.add("email-thread-snippet");
+			snippetEl.textContent = snippet;
+
+			row.append(rowTop, fromEl, snippetEl);
+			row.addEventListener("click", () => {
+				listBody.querySelectorAll(".email-thread-row").forEach(r => r.classList.remove("active"));
+				row.classList.add("active");
+				currentEmailThreadId = id;
+				renderThreadDetail(thread);
+			});
+
+			if (id === currentEmailThreadId) renderThreadDetail(thread);
+		}
+	}
+
+	refreshBtn.addEventListener("click", () => { gmailThreadCache = {}; loadThreads(); });
+	loadThreads();
+}
+
 function renderOverview() {
 	addTodoBtn.style.display = "none";
 	searchQuery = "";
@@ -7150,6 +7964,22 @@ function renderProjects() {
 	});
 	scrollEl.appendChild(shuffleItem);
 
+	const emailItem = document.createElement("div");
+	emailItem.classList.add("email-sidebar-item");
+	if (currentView === "email") emailItem.classList.add("active");
+	emailItem.innerHTML = '<span class="material-symbols-rounded" style="font-size:1rem">mail</span> Email';
+	emailItem.addEventListener("click", () => {
+		currentView = "email";
+		currentProjectTab = "board";
+		selectedTodos.clear();
+		sidebar.classList.remove("open");
+		sidebarBackdrop.classList.remove("visible");
+		pushViewUrl();
+		renderProjects();
+		renderEmailTab();
+	});
+	scrollEl.appendChild(emailItem);
+
 	const sectionLabel = document.createElement("div");
 	sectionLabel.classList.add("sidebar-section-label");
 	sectionLabel.textContent = "Projects";
@@ -7528,6 +8358,106 @@ function openUserSettings(anchorEl, user) {
 	div1.classList.add("user-settings-divider");
 	popup.appendChild(div1);
 
+	// ── Accounts switcher ──
+	const accountsSection = document.createElement("div");
+	accountsSection.classList.add("user-settings-section");
+
+	const accountsLabel = document.createElement("div");
+	accountsLabel.classList.add("user-settings-accounts-label");
+	accountsLabel.textContent = "Accounts";
+	accountsSection.appendChild(accountsLabel);
+
+	function buildAccountsList() {
+		accountsSection.querySelectorAll(".account-row, .account-add-btn").forEach(el => el.remove());
+
+		const accs = getStoredAccounts();
+		const activeId = currentUser?.id;
+
+		Object.entries(accs).forEach(([uid, acc]) => {
+			const row = document.createElement("div");
+			row.classList.add("account-row");
+			if (uid === activeId) row.classList.add("account-row--active");
+
+			const av = document.createElement("div");
+			av.classList.add("account-row-avatar");
+			av.style.background = (uid === activeId ? getAvatarColor() : acc.avatarColor) || "#6366f1";
+			av.textContent = (acc.name || acc.email || "?").charAt(0).toUpperCase();
+
+			const info = document.createElement("div");
+			info.classList.add("account-row-info");
+			const nameDiv = document.createElement("div");
+			nameDiv.classList.add("account-row-name");
+			nameDiv.textContent = acc.name || acc.email;
+			const emailDiv = document.createElement("div");
+			emailDiv.classList.add("account-row-email");
+			emailDiv.textContent = acc.email;
+			info.appendChild(nameDiv);
+			info.appendChild(emailDiv);
+
+			const actions = document.createElement("div");
+			actions.classList.add("account-row-actions");
+
+			if (uid === activeId) {
+				const check = document.createElement("span");
+				check.classList.add("account-active-check");
+				check.innerHTML = '<span class="material-symbols-rounded" style="font-size:1rem;color:var(--md-primary)">check_circle</span>';
+				actions.appendChild(check);
+			} else {
+				const switchBtn = document.createElement("button");
+				switchBtn.classList.add("account-switch-btn");
+				switchBtn.textContent = "Switch";
+				switchBtn.addEventListener("click", (e) => {
+					e.stopPropagation();
+					switchBtn.textContent = "…";
+					switchBtn.disabled = true;
+					switchAccount(uid);
+				});
+				actions.appendChild(switchBtn);
+			}
+
+			const removeBtn = document.createElement("button");
+			removeBtn.classList.add("account-remove-btn");
+			removeBtn.title = uid === activeId ? "Sign out of this account" : "Remove account";
+			removeBtn.innerHTML = '<span class="material-symbols-rounded" style="font-size:0.9rem">close</span>';
+			removeBtn.addEventListener("click", async (e) => {
+				e.stopPropagation();
+				const remaining = Object.keys(getStoredAccounts()).filter(id => id !== uid);
+				if (uid === activeId) {
+					if (remaining.length > 0) {
+						removeStoredAccount(uid);
+						await switchAccount(remaining[0]);
+					} else {
+						signOutAllAccounts();
+					}
+				} else {
+					removeStoredAccount(uid);
+					buildAccountsList();
+				}
+			});
+			actions.appendChild(removeBtn);
+
+			row.appendChild(av);
+			row.appendChild(info);
+			row.appendChild(actions);
+			accountsSection.appendChild(row);
+		});
+
+		// Add account button
+		const addBtn = document.createElement("button");
+		addBtn.classList.add("account-add-btn");
+		addBtn.innerHTML = '<span class="material-symbols-rounded" style="font-size:1rem">add</span> Add account';
+		addBtn.addEventListener("click", () => addAccount());
+		accountsSection.appendChild(addBtn);
+	}
+
+	buildAccountsList();
+	popup.appendChild(accountsSection);
+
+	// ── Divider ──
+	const divAccounts = document.createElement("div");
+	divAccounts.classList.add("user-settings-divider");
+	popup.appendChild(divAccounts);
+
 	// ── Display name ──
 	const nameSection = document.createElement("div");
 	nameSection.classList.add("user-settings-section");
@@ -7702,8 +8632,8 @@ function openUserSettings(anchorEl, user) {
 	// ── Sign out ──
 	const signOutBtn = document.createElement("button");
 	signOutBtn.classList.add("user-settings-signout");
-	signOutBtn.textContent = "Sign out";
-	signOutBtn.addEventListener("click", () => signOut());
+	signOutBtn.textContent = "Sign out of all accounts";
+	signOutBtn.addEventListener("click", () => signOutAllAccounts());
 	popup.appendChild(signOutBtn);
 
 	document.body.appendChild(popup);
